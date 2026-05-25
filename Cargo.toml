@@ -1,0 +1,21 @@
+[package]
+name = "rusty-cv"
+version = "0.1.0"
+edition = "2021"
+description = "Small Rust-first computer vision primitives with optional Python bindings."
+readme = "README.md"
+keywords = ["computer-vision", "image", "resize", "letterbox", "python"]
+categories = ["multimedia::images"]
+
+[lib]
+name = "rusty_cv"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:numpy", "dep:pyo3"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+numpy = { version = "0.28", optional = true }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310"], optional = true }
