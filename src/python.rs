@@ -9,7 +9,7 @@ use numpy::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyList, PyModule};
 
 use crate::bbox::{
     self, BBoxError, BBoxXYWH, BBoxXYXY, BoxRemap, Detection, NmsOptions, PostprocessOptions,
@@ -184,6 +184,17 @@ fn mask_u8_to_numpy<'py>(
     Ok(PyArray2::from_owned_array(py, array))
 }
 
+fn preprocess_infos_to_pylist<'py>(
+    py: Python<'py>,
+    infos: Vec<preprocess::PreprocessInfo>,
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for info in infos {
+        list.append(preprocess_info_to_pydict(py, info)?)?;
+    }
+    Ok(list)
+}
+
 fn rgb_image_from_numpy(input: PyReadonlyArray3<'_, u8>) -> PyResult<RgbImage> {
     let array = input.as_array();
     let (height, width, channels) = array.dim();
@@ -208,6 +219,63 @@ fn rgb_image_from_numpy(input: PyReadonlyArray3<'_, u8>) -> PyResult<RgbImage> {
     })
 }
 
+fn rgb_images_from_python_input(input: &Bound<'_, PyAny>) -> PyResult<Vec<RgbImage>> {
+    if let Ok(array) = input.extract::<PyReadonlyArray4<'_, u8>>() {
+        let array = array.as_array();
+        let (batch, height, width, channels) = array.dim();
+
+        if channels != 3 {
+            return Err(PyValueError::new_err(format!(
+                "expected a NxHxWx3 uint8 array, got last dimension {channels}"
+            )));
+        }
+
+        let mut images = Vec::with_capacity(batch);
+        for index in 0..batch {
+            let mut buffer = Vec::with_capacity(height * width * channels);
+            for y in 0..height {
+                for x in 0..width {
+                    for c in 0..channels {
+                        buffer.push(array[(index, y, x, c)]);
+                    }
+                }
+            }
+
+            let image =
+                RgbImage::from_vec(width as u32, height as u32, buffer).ok_or_else(|| {
+                    PyValueError::new_err("failed to convert batched NumPy array into RGB images")
+                })?;
+            images.push(image);
+        }
+
+        return Ok(images);
+    }
+
+    let iterator = input.try_iter().map_err(|_| {
+        PyValueError::new_err(
+            "expected either a NxHxWx3 uint8 array or a sequence of HxWx3 uint8 arrays",
+        )
+    })?;
+
+    let mut images = Vec::new();
+    for item in iterator {
+        let array = item?.extract::<PyReadonlyArray3<'_, u8>>().map_err(|_| {
+            PyValueError::new_err(
+                "all sequence items must be HxWx3 uint8 arrays for batch preprocessing",
+            )
+        })?;
+        images.push(rgb_image_from_numpy(array)?);
+    }
+
+    if images.is_empty() {
+        return Err(PyValueError::new_err(
+            "batch preprocessing requires at least one input image",
+        ));
+    }
+
+    Ok(images)
+}
+
 fn float_array_to_numpy<'py>(
     py: Python<'py>,
     data: Vec<f32>,
@@ -222,6 +290,23 @@ fn float_array_to_numpy<'py>(
     let array = Array3::from_shape_vec(shape, data)
         .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
     Ok(PyArray3::from_owned_array(py, array))
+}
+
+fn batch_float_array_to_numpy<'py>(
+    py: Python<'py>,
+    data: Vec<f32>,
+    batch: usize,
+    height: u32,
+    width: u32,
+    layout: PreprocessLayout,
+) -> PyResult<Bound<'py, PyArray4<f32>>> {
+    let shape = match layout {
+        PreprocessLayout::Hwc => (batch, height as usize, width as usize, 3),
+        PreprocessLayout::Chw => (batch, 3, height as usize, width as usize),
+    };
+    let array = Array4::from_shape_vec(shape, data)
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    Ok(PyArray4::from_owned_array(py, array))
 }
 
 fn rgb_image_to_numpy<'py>(py: Python<'py>, image: RgbImage) -> PyResult<Bound<'py, PyArray3<u8>>> {
@@ -1624,6 +1709,73 @@ fn preprocess_image_numpy<'py>(
     Ok((array, info))
 }
 
+#[pyfunction]
+#[pyo3(signature = (
+    input_arrays,
+    target_width,
+    target_height,
+    mode=None,
+    fill=(114, 114, 114),
+    filter=None,
+    mean=(0.0, 0.0, 0.0),
+    std=(1.0, 1.0, 1.0),
+    scale_to_unit=true,
+    layout=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn preprocess_batch_numpy<'py>(
+    py: Python<'py>,
+    input_arrays: &Bound<'py, PyAny>,
+    target_width: u32,
+    target_height: u32,
+    mode: Option<&str>,
+    fill: (u8, u8, u8),
+    filter: Option<&str>,
+    mean: (f32, f32, f32),
+    std: (f32, f32, f32),
+    scale_to_unit: bool,
+    layout: Option<&str>,
+) -> PyResult<(Bound<'py, PyArray4<f32>>, Bound<'py, PyList>)> {
+    let images = rgb_images_from_python_input(input_arrays)?;
+    let filter = parse_filter(filter)?;
+    let mode = parse_preprocess_mode(mode, fill)?;
+    let layout = parse_preprocess_layout(layout)?;
+    let dynamic_images = images
+        .into_iter()
+        .map(DynamicImage::ImageRgb8)
+        .collect::<Vec<_>>();
+
+    let result = py
+        .detach(move || {
+            preprocess::preprocess_batch(
+                &dynamic_images,
+                target_width,
+                target_height,
+                mode,
+                filter,
+                [mean.0, mean.1, mean.2],
+                [std.0, std.1, std.2],
+                scale_to_unit,
+                layout,
+            )
+        })
+        .map_err(map_preprocess_error)?;
+
+    let first_info = result.infos.first().copied().ok_or_else(|| {
+        PyValueError::new_err("batch preprocessing requires at least one input image")
+    })?;
+    let infos = preprocess_infos_to_pylist(py, result.infos)?;
+    let array = batch_float_array_to_numpy(
+        py,
+        result.data,
+        infos.len(),
+        first_info.height,
+        first_info.width,
+        layout,
+    )?;
+    Ok((array, infos))
+}
+
 #[pymodule]
 fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_letterbox_py, m)?)?;
@@ -1665,5 +1817,6 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(letterbox_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(preprocess_image_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(preprocess_batch_numpy, m)?)?;
     Ok(())
 }
