@@ -125,6 +125,41 @@ def main() -> None:
     assert resized_preprocess_info["layout"] == "hwc"
     assert np.isclose(resized_preprocessed[0, 0, 0], 1.0)
 
+    batch_preprocessed, batch_infos = rusty_cv.preprocess_batch_numpy(
+        np.stack([array, array], axis=0),
+        4,
+        4,
+        mode="letterbox",
+        fill=(114, 114, 114),
+        filter="nearest",
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        scale_to_unit=True,
+        layout="chw",
+    )
+    assert batch_preprocessed.dtype == np.float32
+    assert batch_preprocessed.shape == (2, 3, 4, 4)
+    assert len(batch_infos) == 2
+    assert batch_infos[0]["mode"] == "letterbox"
+    assert batch_infos[0]["layout"] == "chw"
+    assert batch_infos[1]["geometry"]["resized_width"] == 4
+
+    list_batch_preprocessed, list_batch_infos = rusty_cv.preprocess_batch_numpy(
+        [array, array],
+        3,
+        2,
+        mode="resize",
+        filter="nearest",
+        mean=(0.0, 0.0, 0.0),
+        std=(255.0, 255.0, 255.0),
+        scale_to_unit=False,
+        layout="hwc",
+    )
+    assert list_batch_preprocessed.shape == (2, 2, 3, 3)
+    assert list_batch_infos[0]["mode"] == "resize"
+    assert list_batch_infos[1]["layout"] == "hwc"
+    assert np.isclose(list_batch_preprocessed[0, 0, 0, 0], 1.0)
+
     hwc_float = np.arange(24, dtype=np.float32).reshape(2, 4, 3)
     chw_float = rusty_cv.hwc_to_chw_numpy(hwc_float)
     assert chw_float.dtype == np.float32
