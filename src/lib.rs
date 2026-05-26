@@ -32,9 +32,10 @@ mod python;
 pub use bbox::{
     batched_nms, batched_soft_nms, clip_and_filter_boxes, clip_boxes, filter_boxes_by_area,
     filter_boxes_by_min_size, filter_boxes_by_score, iou, letterbox_boxes, multiclass_nms,
-    multiclass_soft_nms, nms, nms_with_options, resize_boxes, soft_nms, unletterbox_boxes,
-    xywh_to_xyxy, xyxy_to_xywh, BBoxError, BBoxXYWH, BBoxXYXY, BoxFilterResult, Detection,
-    NmsOptions, SoftNmsMethod, SoftNmsOptions,
+    multiclass_soft_nms, nms, nms_with_options, postprocess_detections, resize_boxes, soft_nms,
+    unletterbox_boxes, xywh_to_xyxy, xyxy_to_xywh, BBoxError, BBoxXYWH, BBoxXYXY, BoxFilterResult,
+    BoxRemap, Detection, NmsOptions, PostprocessOptions, PostprocessResult, SoftNmsMethod,
+    SoftNmsOptions,
 };
 /// Error returned by crop operations.
 pub use crop::{center_crop_image, crop_image, CropError, CropInfo, CropResult};
