@@ -226,6 +226,9 @@ pub struct PostprocessResult {
     pub boxes: Vec<BBoxXYXY>,
     pub detections: Vec<Detection>,
 }
+
+type ClipBounds = Option<(u32, u32)>;
+type RemappedBoxes = (Vec<BBoxXYXY>, ClipBounds);
 /// Errors for box postprocessing operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BBoxError {
@@ -991,7 +994,7 @@ fn validate_postprocess_inputs(
 fn remap_boxes_for_postprocess(
     boxes: &[BBoxXYXY],
     remap: BoxRemap,
-) -> Result<(Vec<BBoxXYXY>, Option<(u32, u32)>), BBoxError> {
+) -> Result<RemappedBoxes, BBoxError> {
     match remap {
         BoxRemap::None => Ok((boxes.to_vec(), None)),
         BoxRemap::Current { width, height } => {
