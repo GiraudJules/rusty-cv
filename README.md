@@ -1,8 +1,10 @@
 # rusty-cv
 
+[![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org/)
+
 Small Rust-first computer vision primitives with optional Python bindings built from the same core implementation.
 
-`rusty-cv` is aimed at two use cases:
+`rusty-cv` is aimed at two practical use cases:
 
 - Rust applications that need lightweight CV preprocessing or detection postprocessing helpers
 - Python CV / deep learning pipelines that want expensive steps moved out of Python
@@ -17,6 +19,13 @@ Current scope:
 - hard NMS: single-class, batched, multiclass
 - soft NMS: single-class, batched, multiclass
 - optional Python extension module via `pyo3` + `maturin`
+
+## Why this crate
+
+- Rust-first core with a small, explicit API surface
+- Python extension module generated from the same Rust codebase
+- Useful building blocks for inference preprocessing and detection postprocessing
+- No OpenCV dependency
 
 ## Installation
 
@@ -37,6 +46,8 @@ image = "0.25"
 ```
 
 ### Python
+
+The Python module is built with `maturin` and exposed as `rusty_cv`.
 
 ```bash
 python3 -m venv .venv
@@ -71,11 +82,43 @@ println!("{:?}", nms(&boxes, &scores, 0.5)?);
 
 ## Python quick start
 
+### Byte-based API
+
+```python
+from pathlib import Path
+import rusty_cv
+
+input_bytes = Path("input.jpg").read_bytes()
+
+resized = rusty_cv.resize_image(
+    input_bytes,
+    320,
+    240,
+    filter="triangle",
+    output_format="png",
+)
+
+letterboxed = rusty_cv.letterbox_image(
+    input_bytes,
+    640,
+    640,
+    fill=(114, 114, 114),
+    filter="triangle",
+    output_format="png",
+)
+
+Path("resized.png").write_bytes(resized)
+Path("letterboxed.png").write_bytes(letterboxed)
+```
+
+### NumPy API
+
 ```python
 import numpy as np
 import rusty_cv
 
 image = np.zeros((480, 640, 3), dtype=np.uint8)
+
 letterboxed, info = rusty_cv.letterbox_image_numpy(
     image,
     640,
@@ -115,6 +158,10 @@ The detailed documentation for these APIs, including behavior, return shapes, an
 ## Documentation
 
 - [docs/README.md](docs/README.md)
+- [docs/getting-started.md](docs/getting-started.md)
+- [docs/rust-api.md](docs/rust-api.md)
+- [docs/python-api.md](docs/python-api.md)
+- [docs/comparisons.md](docs/comparisons.md)
 - [docs/postprocessing.md](docs/postprocessing.md)
 
 ## Project Status
