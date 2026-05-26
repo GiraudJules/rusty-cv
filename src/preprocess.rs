@@ -43,6 +43,13 @@ pub struct PreprocessResult {
     pub info: PreprocessInfo,
 }
 
+/// Result of preprocessing a batch of images into one contiguous tensor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreprocessBatchResult {
+    pub data: Vec<f32>,
+    pub infos: Vec<PreprocessInfo>,
+}
+
 /// Errors for fused preprocessing operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreprocessError {
@@ -154,6 +161,41 @@ pub fn preprocess_image(
     })
 }
 
+/// Resize or letterbox a batch of images and normalize them into one contiguous tensor buffer.
+#[allow(clippy::too_many_arguments)]
+pub fn preprocess_batch(
+    images: &[DynamicImage],
+    target_width: u32,
+    target_height: u32,
+    mode: PreprocessMode,
+    filter: FilterType,
+    mean: [f32; 3],
+    std: [f32; 3],
+    scale_to_unit: bool,
+    layout: PreprocessLayout,
+) -> Result<PreprocessBatchResult, PreprocessError> {
+    let mut data = Vec::new();
+    let mut infos = Vec::with_capacity(images.len());
+
+    for image in images {
+        let result = preprocess_image(
+            image,
+            target_width,
+            target_height,
+            mode,
+            filter,
+            mean,
+            std,
+            scale_to_unit,
+            layout,
+        )?;
+        data.extend(result.data);
+        infos.push(result.info);
+    }
+
+    Ok(PreprocessBatchResult { data, infos })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +304,33 @@ mod tests {
                 value: 0.0,
             }
         );
+    }
+
+    #[test]
+    fn preprocesses_batch_into_nchw_tensor() {
+        let images = vec![
+            image_from_pixels(2, 1, vec![[255, 0, 0], [0, 255, 0]]),
+            image_from_pixels(2, 1, vec![[0, 0, 255], [255, 255, 255]]),
+        ];
+
+        let result = preprocess_batch(
+            &images,
+            2,
+            1,
+            PreprocessMode::Resize,
+            FilterType::Nearest,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            true,
+            PreprocessLayout::Chw,
+        )
+        .unwrap();
+
+        assert_eq!(result.infos.len(), 2);
+        assert_eq!(result.infos[0].layout, PreprocessLayout::Chw);
+        assert_eq!(result.infos[1].layout, PreprocessLayout::Chw);
+        assert_eq!(result.data.len(), 12);
+        assert_eq!(result.data[0..6], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(result.data[6..12], [0.0, 1.0, 0.0, 1.0, 1.0, 1.0]);
     }
 }

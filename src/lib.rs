@@ -49,8 +49,8 @@ pub use letterbox::{
 pub use normalize::{normalize_image, NormalizeError, NormalizeInfo, NormalizeResult};
 /// Error returned by fused preprocessing operations.
 pub use preprocess::{
-    preprocess_image, PreprocessError, PreprocessGeometry, PreprocessInfo, PreprocessLayout,
-    PreprocessMode, PreprocessResult,
+    preprocess_batch, preprocess_image, PreprocessBatchResult, PreprocessError, PreprocessGeometry,
+    PreprocessInfo, PreprocessLayout, PreprocessMode, PreprocessResult,
 };
 /// Error returned by direct resize operations.
 pub use resize::{resize_image, ResizeError, ResizeInfo, ResizeResult};
