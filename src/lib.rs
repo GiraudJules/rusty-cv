@@ -7,7 +7,7 @@
 //! - direct crop and center crop
 //! - direct resize to exact dimensions
 //! - letterbox resize with aspect-ratio preservation and padding
-//! - RGB normalization into contiguous `f32` buffers
+//! - RGB normalization and fused preprocessing into contiguous `f32` buffers
 //! - optional Python bindings behind the `python` feature
 
 /// Bounding-box geometry and postprocessing operations.
@@ -18,6 +18,8 @@ pub mod crop;
 pub mod letterbox;
 /// Image normalization operations.
 pub mod normalize;
+/// Fused inference preprocessing operations.
+pub mod preprocess;
 /// Direct image resize operations.
 pub mod resize;
 
@@ -26,8 +28,10 @@ mod python;
 
 /// Error returned by box postprocessing operations.
 pub use bbox::{
-    batched_nms, batched_soft_nms, iou, multiclass_nms, multiclass_soft_nms, nms, nms_with_options,
-    soft_nms, BBoxError, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
+    batched_nms, batched_soft_nms, clip_boxes, iou, letterbox_boxes, multiclass_nms,
+    multiclass_soft_nms, nms, nms_with_options, resize_boxes, soft_nms, unletterbox_boxes,
+    xywh_to_xyxy, xyxy_to_xywh, BBoxError, BBoxXYWH, BBoxXYXY, Detection, NmsOptions,
+    SoftNmsMethod, SoftNmsOptions,
 };
 /// Error returned by crop operations.
 pub use crop::{center_crop_image, crop_image, CropError, CropInfo, CropResult};
@@ -37,5 +41,10 @@ pub use letterbox::{
 };
 /// Error returned by normalization operations.
 pub use normalize::{normalize_image, NormalizeError, NormalizeInfo, NormalizeResult};
+/// Error returned by fused preprocessing operations.
+pub use preprocess::{
+    preprocess_image, PreprocessError, PreprocessGeometry, PreprocessInfo, PreprocessLayout,
+    PreprocessMode, PreprocessResult,
+};
 /// Error returned by direct resize operations.
 pub use resize::{resize_image, ResizeError, ResizeInfo, ResizeResult};

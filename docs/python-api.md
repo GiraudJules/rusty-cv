@@ -138,6 +138,31 @@ normalized = rusty_cv.normalize_image_numpy(
 )
 ```
 
+### `preprocess_image_numpy`
+
+Returns `(tensor, info)` and fuses resize or letterbox geometry with
+normalization and optional `HWC -> CHW` conversion.
+
+```python
+tensor, info = rusty_cv.preprocess_image_numpy(
+    image,
+    640,
+    640,
+    mode="letterbox",
+    fill=(114, 114, 114),
+    filter="triangle",
+    mean=(0.485, 0.456, 0.406),
+    std=(0.229, 0.224, 0.225),
+    scale_to_unit=True,
+    layout="chw",
+)
+```
+
+Accepted values:
+
+- `mode`: `resize`, `letterbox`
+- `layout`: `chw`, `hwc`
+
 ## Box APIs
 
 ### `iou`
@@ -162,6 +187,19 @@ Returns a Python list of kept indices.
 keep = rusty_cv.nms(boxes, scores, iou_threshold=0.5)
 ```
 
+### Box conversion and remapping
+
+All box array helpers expect `N x 4` `float32` arrays.
+
+```python
+xywh = rusty_cv.xyxy_to_xywh_numpy(boxes)
+xyxy = rusty_cv.xywh_to_xyxy_numpy(xywh)
+clipped = rusty_cv.clip_boxes_numpy(boxes, 640, 480)
+resized = rusty_cv.resize_boxes_numpy(boxes, 1280, 720, 640, 640)
+letterboxed = rusty_cv.letterbox_boxes_numpy(boxes, 1280, 720, 640, 640)
+restored = rusty_cv.unletterbox_boxes_numpy(letterboxed, 1280, 720, 640, 640)
+```
+
 ## Accepted filter names
 
 - `nearest`
@@ -177,4 +215,4 @@ keep = rusty_cv.nms(boxes, scores, iou_threshold=0.5)
 
 - NumPy image inputs must be `uint8`
 - NumPy image inputs must be shaped `H x W x 3`
-- grayscale, RGBA, CHW, and batched arrays are not supported yet
+- grayscale, RGBA, and batched arrays are not supported yet

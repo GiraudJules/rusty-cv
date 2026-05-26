@@ -40,8 +40,12 @@ pub enum LetterboxError {
 impl std::fmt::Display for LetterboxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ZeroSizedImage => f.write_str("source image width and height must be greater than zero"),
-            Self::ZeroSizedTarget => f.write_str("target width and height must be greater than zero"),
+            Self::ZeroSizedImage => {
+                f.write_str("source image width and height must be greater than zero")
+            }
+            Self::ZeroSizedTarget => {
+                f.write_str("target width and height must be greater than zero")
+            }
         }
     }
 }
@@ -112,8 +116,7 @@ pub fn letterbox_image(
     let info = compute_letterbox(rgb.width(), rgb.height(), target_width, target_height)?;
 
     let resized = imageops::resize(&rgb, info.resized_width, info.resized_height, filter);
-    let mut canvas: RgbImage =
-        ImageBuffer::from_pixel(target_width, target_height, Rgb(fill));
+    let mut canvas: RgbImage = ImageBuffer::from_pixel(target_width, target_height, Rgb(fill));
 
     imageops::replace(
         &mut canvas,

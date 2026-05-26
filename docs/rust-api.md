@@ -88,15 +88,60 @@ println!("{}", result.data.len());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### `preprocess_image`
+
+Fuses resize or letterbox geometry with normalization and tensor layout
+conversion.
+
+- supports `PreprocessMode::Resize`
+- supports `PreprocessMode::Letterbox { fill }`
+- supports `PreprocessLayout::Hwc` and `PreprocessLayout::Chw`
+
+```rust
+use image::imageops::FilterType;
+use rusty_cv::{preprocess_image, PreprocessLayout, PreprocessMode};
+
+let image = image::open("input.jpg")?;
+let result = preprocess_image(
+    &image,
+    640,
+    640,
+    PreprocessMode::Letterbox { fill: [114, 114, 114] },
+    FilterType::Triangle,
+    [0.485, 0.456, 0.406],
+    [0.229, 0.224, 0.225],
+    true,
+    PreprocessLayout::Chw,
+)?;
+println!("{:?}", result.info);
+println!("{}", result.data.len());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Box operations
 
 ### `BBoxXYXY`
 
 Axis-aligned box type using `x1, y1, x2, y2` coordinates.
 
+### `BBoxXYWH`
+
+Axis-aligned box type using `x, y, width, height` coordinates.
+
 ### `iou`
 
 Computes intersection-over-union for two `BBoxXYXY` values.
+
+### Box conversion and remapping
+
+The crate also exposes:
+
+- `xyxy_to_xywh`
+- `xywh_to_xyxy`
+- `clip_boxes`
+- `resize_boxes`
+- `letterbox_boxes`
+- `unletterbox_boxes`
 
 ### `nms`
 
@@ -127,4 +172,5 @@ println!("{keep:?}");
 - `rusty_cv::crop`
 - `rusty_cv::letterbox`
 - `rusty_cv::normalize`
+- `rusty_cv::preprocess`
 - `rusty_cv::resize`

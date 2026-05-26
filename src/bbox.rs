@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::letterbox::compute_letterbox;
+
 /// Axis-aligned bounding box in `xyxy` format.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BBoxXYXY {
@@ -8,6 +10,15 @@ pub struct BBoxXYXY {
     pub y1: f32,
     pub x2: f32,
     pub y2: f32,
+}
+
+/// Axis-aligned bounding box in `xywh` format.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BBoxXYWH {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 impl BBoxXYXY {
@@ -18,6 +29,16 @@ impl BBoxXYXY {
             y1: y,
             x2: x + width,
             y2: y + height,
+        }
+    }
+
+    /// Convert an `xyxy` box into `xywh` format.
+    pub fn to_xywh(&self) -> BBoxXYWH {
+        BBoxXYWH {
+            x: self.x1,
+            y: self.y1,
+            width: self.x2 - self.x1,
+            height: self.y2 - self.y1,
         }
     }
 
@@ -65,6 +86,23 @@ impl BBoxXYXY {
 
     fn is_finite(&self) -> bool {
         self.x1.is_finite() && self.y1.is_finite() && self.x2.is_finite() && self.y2.is_finite()
+    }
+
+    /// Clamp a box to image bounds in-place.
+    pub fn clip(&self, width: f32, height: f32) -> Self {
+        Self {
+            x1: self.x1.clamp(0.0, width),
+            y1: self.y1.clamp(0.0, height),
+            x2: self.x2.clamp(0.0, width),
+            y2: self.y2.clamp(0.0, height),
+        }
+    }
+}
+
+impl BBoxXYWH {
+    /// Convert an `xywh` box into `xyxy` format.
+    pub fn to_xyxy(&self) -> BBoxXYXY {
+        BBoxXYXY::from_xywh(self.x, self.y, self.width, self.height)
     }
 }
 
@@ -147,6 +185,10 @@ pub enum BBoxError {
     InvalidScoreThreshold(f32),
     InvalidSigma(f32),
     InvalidNumClasses(usize),
+    InvalidImageSize {
+        width: u32,
+        height: u32,
+    },
     NonFiniteBox {
         index: usize,
     },
@@ -192,6 +234,11 @@ impl std::fmt::Display for BBoxError {
             Self::InvalidNumClasses(value) => {
                 write!(f, "num_classes must be greater than zero, got {}", value)
             }
+            Self::InvalidImageSize { width, height } => write!(
+                f,
+                "image width and height must be greater than zero, got {}x{}",
+                width, height
+            ),
             Self::NonFiniteBox { index } => {
                 write!(f, "box at index {} contains a non-finite coordinate", index)
             }
@@ -209,6 +256,120 @@ impl std::error::Error for BBoxError {}
 /// Compute IoU between two `xyxy` boxes.
 pub fn iou(a: BBoxXYXY, b: BBoxXYXY) -> f32 {
     a.iou(&b)
+}
+
+/// Convert boxes from `xyxy` into `xywh` format.
+pub fn xyxy_to_xywh(boxes: &[BBoxXYXY]) -> Result<Vec<BBoxXYWH>, BBoxError> {
+    validate_boxes(boxes)?;
+    Ok(boxes.iter().map(BBoxXYXY::to_xywh).collect())
+}
+
+/// Convert boxes from `xywh` into `xyxy` format.
+pub fn xywh_to_xyxy(boxes: &[BBoxXYWH]) -> Result<Vec<BBoxXYXY>, BBoxError> {
+    for (index, bbox) in boxes.iter().enumerate() {
+        let is_finite = bbox.x.is_finite()
+            && bbox.y.is_finite()
+            && bbox.width.is_finite()
+            && bbox.height.is_finite();
+        if !is_finite {
+            return Err(BBoxError::NonFiniteBox { index });
+        }
+    }
+
+    Ok(boxes.iter().map(BBoxXYWH::to_xyxy).collect())
+}
+
+/// Clamp boxes to image bounds.
+pub fn clip_boxes(boxes: &[BBoxXYXY], width: u32, height: u32) -> Result<Vec<BBoxXYXY>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_image_size(width, height)?;
+    let width = width as f32;
+    let height = height as f32;
+    Ok(boxes.iter().map(|bbox| bbox.clip(width, height)).collect())
+}
+
+/// Map boxes from one image size to another with direct resize scaling.
+pub fn resize_boxes(
+    boxes: &[BBoxXYXY],
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<BBoxXYXY>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_image_size(original_width, original_height)?;
+    validate_image_size(target_width, target_height)?;
+
+    let scale_x = target_width as f32 / original_width as f32;
+    let scale_y = target_height as f32 / original_height as f32;
+
+    Ok(boxes
+        .iter()
+        .map(|bbox| BBoxXYXY {
+            x1: bbox.x1 * scale_x,
+            y1: bbox.y1 * scale_y,
+            x2: bbox.x2 * scale_x,
+            y2: bbox.y2 * scale_y,
+        })
+        .collect())
+}
+
+/// Map boxes from original image space into letterboxed image space.
+pub fn letterbox_boxes(
+    boxes: &[BBoxXYXY],
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<BBoxXYXY>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_image_size(original_width, original_height)?;
+    validate_image_size(target_width, target_height)?;
+    let info = compute_letterbox(original_width, original_height, target_width, target_height)
+        .expect("validated image sizes should satisfy compute_letterbox");
+
+    let scale = info.scale;
+    let pad_x = info.padding.left as f32;
+    let pad_y = info.padding.top as f32;
+
+    Ok(boxes
+        .iter()
+        .map(|bbox| BBoxXYXY {
+            x1: bbox.x1 * scale + pad_x,
+            y1: bbox.y1 * scale + pad_y,
+            x2: bbox.x2 * scale + pad_x,
+            y2: bbox.y2 * scale + pad_y,
+        })
+        .collect())
+}
+
+/// Map boxes from letterboxed image space back to the original image space.
+pub fn unletterbox_boxes(
+    boxes: &[BBoxXYXY],
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<BBoxXYXY>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_image_size(original_width, original_height)?;
+    validate_image_size(target_width, target_height)?;
+    let info = compute_letterbox(original_width, original_height, target_width, target_height)
+        .expect("validated image sizes should satisfy compute_letterbox");
+
+    let scale = info.scale;
+    let pad_x = info.padding.left as f32;
+    let pad_y = info.padding.top as f32;
+
+    Ok(boxes
+        .iter()
+        .map(|bbox| BBoxXYXY {
+            x1: (bbox.x1 - pad_x) / scale,
+            y1: (bbox.y1 - pad_y) / scale,
+            x2: (bbox.x2 - pad_x) / scale,
+            y2: (bbox.y2 - pad_y) / scale,
+        })
+        .collect())
 }
 
 /// Run single-class non-maximum suppression with custom options.
@@ -574,6 +735,13 @@ fn validate_boxes(boxes: &[BBoxXYXY]) -> Result<(), BBoxError> {
     Ok(())
 }
 
+fn validate_image_size(width: u32, height: u32) -> Result<(), BBoxError> {
+    if width == 0 || height == 0 {
+        return Err(BBoxError::InvalidImageSize { width, height });
+    }
+    Ok(())
+}
+
 fn validate_scores(scores: &[f32]) -> Result<(), BBoxError> {
     for (index, score) in scores.iter().copied().enumerate() {
         if !score.is_finite() {
@@ -711,6 +879,80 @@ mod tests {
         };
 
         assert!((iou(a, b) - (25.0 / 175.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn converts_between_xyxy_and_xywh() {
+        let boxes = vec![BBoxXYXY::from_xywh(2.0, 3.0, 4.0, 5.0)];
+        let xywh = xyxy_to_xywh(&boxes).unwrap();
+        assert_eq!(
+            xywh,
+            vec![BBoxXYWH {
+                x: 2.0,
+                y: 3.0,
+                width: 4.0,
+                height: 5.0,
+            }]
+        );
+        assert_eq!(xywh_to_xyxy(&xywh).unwrap(), boxes);
+    }
+
+    #[test]
+    fn clips_boxes_to_image_bounds() {
+        let boxes = vec![BBoxXYXY {
+            x1: -5.0,
+            y1: 3.0,
+            x2: 12.0,
+            y2: 30.0,
+        }];
+
+        let clipped = clip_boxes(&boxes, 10, 20).unwrap();
+
+        assert_eq!(
+            clipped,
+            vec![BBoxXYXY {
+                x1: 0.0,
+                y1: 3.0,
+                x2: 10.0,
+                y2: 20.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn rescales_boxes_for_direct_resize() {
+        let boxes = vec![BBoxXYXY::from_xywh(10.0, 20.0, 30.0, 40.0)];
+
+        let resized = resize_boxes(&boxes, 100, 200, 200, 100).unwrap();
+
+        assert_eq!(
+            resized,
+            vec![BBoxXYXY {
+                x1: 20.0,
+                y1: 10.0,
+                x2: 80.0,
+                y2: 30.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn remaps_boxes_through_letterbox_and_back() {
+        let boxes = vec![BBoxXYXY::from_xywh(100.0, 50.0, 200.0, 100.0)];
+
+        let letterboxed = letterbox_boxes(&boxes, 400, 200, 640, 640).unwrap();
+        assert_eq!(
+            letterboxed,
+            vec![BBoxXYXY {
+                x1: 160.0,
+                y1: 240.0,
+                x2: 480.0,
+                y2: 400.0,
+            }]
+        );
+
+        let restored = unletterbox_boxes(&letterboxed, 400, 200, 640, 640).unwrap();
+        assert_eq!(restored, boxes);
     }
 
     #[test]
@@ -1043,6 +1285,13 @@ mod tests {
                 boxes: 1,
                 class_scores: 1,
                 num_classes: 2,
+            }
+        );
+        assert_eq!(
+            clip_boxes(&boxes, 0, 10).unwrap_err(),
+            BBoxError::InvalidImageSize {
+                width: 0,
+                height: 10,
             }
         );
         assert_eq!(
