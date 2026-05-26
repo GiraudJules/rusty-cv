@@ -33,9 +33,7 @@ impl std::fmt::Display for CropError {
             Self::ZeroSizedImage => {
                 f.write_str("source image width and height must be greater than zero")
             }
-            Self::ZeroSizedCrop => {
-                f.write_str("crop width and height must be greater than zero")
-            }
+            Self::ZeroSizedCrop => f.write_str("crop width and height must be greater than zero"),
             Self::CropOutOfBounds => {
                 f.write_str("crop rectangle must fit inside the source image bounds")
             }
@@ -63,8 +61,12 @@ pub fn crop_image(
         return Err(CropError::ZeroSizedCrop);
     }
 
-    let fits_horizontally = x.checked_add(width).is_some_and(|right| right <= rgb.width());
-    let fits_vertically = y.checked_add(height).is_some_and(|bottom| bottom <= rgb.height());
+    let fits_horizontally = x
+        .checked_add(width)
+        .is_some_and(|right| right <= rgb.width());
+    let fits_vertically = y
+        .checked_add(height)
+        .is_some_and(|bottom| bottom <= rgb.height());
 
     if !fits_horizontally || !fits_vertically {
         return Err(CropError::CropOutOfBounds);
