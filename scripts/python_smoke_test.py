@@ -99,9 +99,94 @@ def main() -> None:
         dtype=np.float32,
     )
     scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
+    class_ids = np.array([0, 0, 1], dtype=np.int64)
+    class_scores = np.array(
+        [
+            [0.9, 0.1],
+            [0.8, 0.75],
+            [0.1, 0.7],
+        ],
+        dtype=np.float32,
+    )
 
     keep = rusty_cv.nms(boxes, scores, iou_threshold=0.5)
     assert keep == [0, 2]
+    filtered_keep = rusty_cv.nms(
+        boxes,
+        scores,
+        iou_threshold=0.5,
+        score_threshold=0.75,
+        pre_nms_top_k=2,
+        max_detections=1,
+    )
+    assert filtered_keep == [0]
+
+    batched = rusty_cv.batched_nms(
+        boxes,
+        scores,
+        class_ids,
+        iou_threshold=0.5,
+    )
+    assert batched["indices"].tolist() == [0, 2]
+    assert batched["class_ids"].tolist() == [0, 1]
+    assert np.allclose(batched["scores"], np.array([0.9, 0.7], dtype=np.float32))
+
+    multiclass = rusty_cv.multiclass_nms(
+        boxes,
+        class_scores,
+        iou_threshold=0.5,
+        score_threshold=0.7,
+        max_detections=3,
+    )
+    assert multiclass["indices"].tolist() == [0, 1, 2]
+    assert multiclass["class_ids"].tolist() == [0, 1, 1]
+    assert np.allclose(multiclass["scores"], np.array([0.9, 0.75, 0.7], dtype=np.float32))
+
+    soft_linear = rusty_cv.soft_nms(
+        boxes,
+        scores,
+        method="linear",
+        iou_threshold=0.5,
+        score_threshold=0.2,
+    )
+    assert soft_linear["indices"].tolist() == [0, 2, 1]
+    assert np.isclose(float(soft_linear["scores"][0]), 0.9)
+    assert np.isclose(float(soft_linear["scores"][2]), 0.25546217, atol=1e-6)
+
+    soft_gaussian = rusty_cv.soft_nms(
+        boxes[:2],
+        scores[:2],
+        method="gaussian",
+        iou_threshold=0.1,
+        score_threshold=0.2,
+        sigma=0.5,
+    )
+    assert soft_gaussian["indices"].tolist() == [0, 1]
+    assert np.isclose(float(soft_gaussian["scores"][1]), 0.31670862, atol=1e-6)
+
+    batched_soft = rusty_cv.batched_soft_nms(
+        boxes,
+        scores,
+        class_ids,
+        method="linear",
+        iou_threshold=0.5,
+        score_threshold=0.2,
+    )
+    assert batched_soft["indices"].tolist() == [0, 2, 1]
+    assert batched_soft["class_ids"].tolist() == [0, 1, 0]
+    assert np.isclose(float(batched_soft["scores"][2]), 0.25546217, atol=1e-6)
+
+    multiclass_soft = rusty_cv.multiclass_soft_nms(
+        boxes,
+        class_scores,
+        method="linear",
+        iou_threshold=0.5,
+        score_threshold=0.25,
+        max_detections=4,
+    )
+    assert multiclass_soft["indices"].tolist() == [0, 1, 2, 1]
+    assert multiclass_soft["class_ids"].tolist() == [0, 1, 1, 0]
+    assert np.isclose(float(multiclass_soft["scores"][3]), 0.25546217, atol=1e-6)
     assert np.isclose(rusty_cv.iou((0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 15.0, 15.0)), 25.0 / 175.0)
 
     print("python smoke test: ok")

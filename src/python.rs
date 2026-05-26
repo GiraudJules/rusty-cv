@@ -2,13 +2,15 @@ use std::io::Cursor;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, RgbImage};
-use numpy::ndarray::Array3;
-use numpy::{PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
+use numpy::ndarray::{Array1, Array3};
+use numpy::{PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
 
-use crate::bbox::{self, BBoxError, BBoxXYXY};
+use crate::bbox::{
+    self, BBoxError, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
+};
 use crate::crop::{self, CropError};
 use crate::letterbox::{self, LetterboxError};
 use crate::normalize::{self, NormalizeError};
@@ -141,16 +143,10 @@ fn float_array_to_numpy<'py>(
     Ok(PyArray3::from_owned_array(py, array))
 }
 
-fn rgb_image_to_numpy<'py>(
-    py: Python<'py>,
-    image: RgbImage,
-) -> PyResult<Bound<'py, PyArray3<u8>>> {
+fn rgb_image_to_numpy<'py>(py: Python<'py>, image: RgbImage) -> PyResult<Bound<'py, PyArray3<u8>>> {
     let (width, height) = image.dimensions();
-    let array = Array3::from_shape_vec(
-        (height as usize, width as usize, 3),
-        image.into_raw(),
-    )
-    .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    let array = Array3::from_shape_vec((height as usize, width as usize, 3), image.into_raw())
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
     Ok(PyArray3::from_owned_array(py, array))
 }
 
@@ -180,6 +176,92 @@ fn scores_from_numpy(input: PyReadonlyArray1<'_, f32>) -> Vec<f32> {
     input.as_array().iter().copied().collect()
 }
 
+fn class_ids_from_numpy(input: PyReadonlyArray1<'_, i64>) -> PyResult<Vec<usize>> {
+    let mut class_ids = Vec::with_capacity(input.len()?);
+    for value in input.as_array().iter().copied() {
+        if value < 0 {
+            return Err(PyValueError::new_err(format!(
+                "class_ids must be non-negative, got {}",
+                value
+            )));
+        }
+        class_ids.push(value as usize);
+    }
+    Ok(class_ids)
+}
+
+fn nms_options(
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> NmsOptions {
+    NmsOptions {
+        iou_threshold,
+        score_threshold: score_threshold.unwrap_or(f32::NEG_INFINITY),
+        pre_nms_top_k,
+        max_detections,
+    }
+}
+
+fn parse_soft_nms_method(method: Option<&str>) -> PyResult<SoftNmsMethod> {
+    match method.unwrap_or("linear").to_ascii_lowercase().as_str() {
+        "linear" => Ok(SoftNmsMethod::Linear),
+        "gaussian" => Ok(SoftNmsMethod::Gaussian),
+        other => Err(PyValueError::new_err(format!(
+            "unsupported soft_nms method '{other}'. Use linear or gaussian"
+        ))),
+    }
+}
+
+fn soft_nms_options(
+    method: SoftNmsMethod,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    sigma: f32,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> SoftNmsOptions {
+    SoftNmsOptions {
+        method,
+        iou_threshold,
+        score_threshold: score_threshold.unwrap_or(f32::NEG_INFINITY),
+        sigma,
+        pre_nms_top_k,
+        max_detections,
+    }
+}
+
+fn detections_to_pydict<'py>(
+    py: Python<'py>,
+    detections: Vec<Detection>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut indices = Vec::with_capacity(detections.len());
+    let mut class_ids = Vec::with_capacity(detections.len());
+    let mut scores = Vec::with_capacity(detections.len());
+
+    for detection in detections {
+        indices.push(detection.box_index as i64);
+        class_ids.push(detection.class_id as i64);
+        scores.push(detection.score);
+    }
+
+    let result = PyDict::new(py);
+    result.set_item(
+        "indices",
+        PyArray1::from_owned_array(py, Array1::from_vec(indices)),
+    )?;
+    result.set_item(
+        "class_ids",
+        PyArray1::from_owned_array(py, Array1::from_vec(class_ids)),
+    )?;
+    result.set_item(
+        "scores",
+        PyArray1::from_owned_array(py, Array1::from_vec(scores)),
+    )?;
+    Ok(result)
+}
+
 #[pyfunction(name = "compute_letterbox")]
 fn compute_letterbox_py<'py>(
     py: Python<'py>,
@@ -188,13 +270,9 @@ fn compute_letterbox_py<'py>(
     target_width: u32,
     target_height: u32,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let info = letterbox::compute_letterbox(
-        original_width,
-        original_height,
-        target_width,
-        target_height,
-    )
-    .map_err(map_letterbox_error)?;
+    let info =
+        letterbox::compute_letterbox(original_width, original_height, target_width, target_height)
+            .map_err(map_letterbox_error)?;
     letterbox_info_to_pydict(py, info)
 }
 
@@ -211,8 +289,8 @@ fn resize_image<'py>(
     let image = decode_image(input_bytes)?;
     let filter = parse_filter(filter)?;
     let output_format = parse_format(output_format)?;
-    let result =
-        resize::resize_image(&image, target_width, target_height, filter).map_err(map_resize_error)?;
+    let result = resize::resize_image(&image, target_width, target_height, filter)
+        .map_err(map_resize_error)?;
     let encoded = encode_image(DynamicImage::ImageRgb8(result.image), output_format)?;
     Ok(PyBytes::new(py, &encoded))
 }
@@ -257,15 +335,229 @@ fn iou_py(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
 }
 
 #[pyfunction(name = "nms")]
-#[pyo3(signature = (boxes, scores, iou_threshold=0.5))]
-fn nms_py(
+#[pyo3(signature = (
+    boxes,
+    scores,
+    iou_threshold=0.5,
+    score_threshold=None,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn nms_py<'py>(
+    py: Python<'py>,
     boxes: PyReadonlyArray2<'_, f32>,
     scores: PyReadonlyArray1<'_, f32>,
     iou_threshold: f32,
+    score_threshold: Option<f32>,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
 ) -> PyResult<Vec<usize>> {
     let boxes = boxes_from_numpy(boxes)?;
     let scores = scores_from_numpy(scores);
-    bbox::nms(&boxes, &scores, iou_threshold).map_err(map_bbox_error)
+    let options = nms_options(
+        iou_threshold,
+        score_threshold,
+        pre_nms_top_k,
+        max_detections,
+    );
+    py.detach(move || bbox::nms_with_options(&boxes, &scores, &options))
+        .map_err(map_bbox_error)
+}
+
+#[pyfunction(name = "batched_nms")]
+#[pyo3(signature = (
+    boxes,
+    scores,
+    class_ids,
+    iou_threshold=0.5,
+    score_threshold=None,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn batched_nms_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    scores: PyReadonlyArray1<'_, f32>,
+    class_ids: PyReadonlyArray1<'_, i64>,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let scores = scores_from_numpy(scores);
+    let class_ids = class_ids_from_numpy(class_ids)?;
+    let options = nms_options(
+        iou_threshold,
+        score_threshold,
+        pre_nms_top_k,
+        max_detections,
+    );
+
+    let detections = py
+        .detach(move || bbox::batched_nms(&boxes, &scores, &class_ids, &options))
+        .map_err(map_bbox_error)?;
+    detections_to_pydict(py, detections)
+}
+
+#[pyfunction(name = "multiclass_nms")]
+#[pyo3(signature = (
+    boxes,
+    class_scores,
+    iou_threshold=0.5,
+    score_threshold=None,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn multiclass_nms_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    class_scores: PyReadonlyArray2<'_, f32>,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let class_scores_array = class_scores.as_array();
+    let (_, num_classes) = class_scores_array.dim();
+    let class_scores = class_scores_array.iter().copied().collect::<Vec<f32>>();
+    let options = nms_options(
+        iou_threshold,
+        score_threshold,
+        pre_nms_top_k,
+        max_detections,
+    );
+
+    let detections = py
+        .detach(move || bbox::multiclass_nms(&boxes, &class_scores, num_classes, &options))
+        .map_err(map_bbox_error)?;
+    detections_to_pydict(py, detections)
+}
+
+#[pyfunction(name = "soft_nms")]
+#[pyo3(signature = (
+    boxes,
+    scores,
+    method=None,
+    iou_threshold=0.5,
+    score_threshold=None,
+    sigma=0.5,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn soft_nms_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    scores: PyReadonlyArray1<'_, f32>,
+    method: Option<&str>,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    sigma: f32,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let scores = scores_from_numpy(scores);
+    let method = parse_soft_nms_method(method)?;
+    let options = soft_nms_options(
+        method,
+        iou_threshold,
+        score_threshold,
+        sigma,
+        pre_nms_top_k,
+        max_detections,
+    );
+
+    let detections = py
+        .detach(move || bbox::soft_nms(&boxes, &scores, &options))
+        .map_err(map_bbox_error)?;
+    detections_to_pydict(py, detections)
+}
+
+#[pyfunction(name = "batched_soft_nms")]
+#[pyo3(signature = (
+    boxes,
+    scores,
+    class_ids,
+    method=None,
+    iou_threshold=0.5,
+    score_threshold=None,
+    sigma=0.5,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn batched_soft_nms_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    scores: PyReadonlyArray1<'_, f32>,
+    class_ids: PyReadonlyArray1<'_, i64>,
+    method: Option<&str>,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    sigma: f32,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let scores = scores_from_numpy(scores);
+    let class_ids = class_ids_from_numpy(class_ids)?;
+    let method = parse_soft_nms_method(method)?;
+    let options = soft_nms_options(
+        method,
+        iou_threshold,
+        score_threshold,
+        sigma,
+        pre_nms_top_k,
+        max_detections,
+    );
+
+    let detections = py
+        .detach(move || bbox::batched_soft_nms(&boxes, &scores, &class_ids, &options))
+        .map_err(map_bbox_error)?;
+    detections_to_pydict(py, detections)
+}
+
+#[pyfunction(name = "multiclass_soft_nms")]
+#[pyo3(signature = (
+    boxes,
+    class_scores,
+    method=None,
+    iou_threshold=0.5,
+    score_threshold=None,
+    sigma=0.5,
+    pre_nms_top_k=None,
+    max_detections=None
+))]
+fn multiclass_soft_nms_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    class_scores: PyReadonlyArray2<'_, f32>,
+    method: Option<&str>,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    sigma: f32,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let class_scores_array = class_scores.as_array();
+    let (_, num_classes) = class_scores_array.dim();
+    let class_scores = class_scores_array.iter().copied().collect::<Vec<f32>>();
+    let method = parse_soft_nms_method(method)?;
+    let options = soft_nms_options(
+        method,
+        iou_threshold,
+        score_threshold,
+        sigma,
+        pre_nms_top_k,
+        max_detections,
+    );
+
+    let detections = py
+        .detach(move || bbox::multiclass_soft_nms(&boxes, &class_scores, num_classes, &options))
+        .map_err(map_bbox_error)?;
+    detections_to_pydict(py, detections)
 }
 
 #[pyfunction]
@@ -430,6 +722,11 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_letterbox_py, m)?)?;
     m.add_function(wrap_pyfunction!(iou_py, m)?)?;
     m.add_function(wrap_pyfunction!(nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(batched_nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(multiclass_nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(soft_nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(batched_soft_nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(multiclass_soft_nms_py, m)?)?;
     m.add_function(wrap_pyfunction!(crop_image, m)?)?;
     m.add_function(wrap_pyfunction!(crop_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(center_crop_image, m)?)?;

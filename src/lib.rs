@@ -3,7 +3,7 @@
 //!
 //! Current functionality:
 //!
-//! - box geometry helpers, IoU, and NMS
+//! - box geometry helpers, IoU, hard NMS variants, and soft NMS variants
 //! - direct crop and center crop
 //! - direct resize to exact dimensions
 //! - letterbox resize with aspect-ratio preservation and padding
@@ -25,15 +25,17 @@ pub mod resize;
 mod python;
 
 /// Error returned by box postprocessing operations.
-pub use bbox::{BBoxError, BBoxXYXY, iou, nms};
+pub use bbox::{
+    batched_nms, batched_soft_nms, iou, multiclass_nms, multiclass_soft_nms, nms, nms_with_options,
+    soft_nms, BBoxError, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
+};
 /// Error returned by crop operations.
-pub use crop::{CropError, CropInfo, CropResult, center_crop_image, crop_image};
+pub use crop::{center_crop_image, crop_image, CropError, CropInfo, CropResult};
 /// Error returned by letterbox operations.
 pub use letterbox::{
-    LetterboxError, LetterboxInfo, LetterboxResult, Padding, compute_letterbox,
-    letterbox_image,
+    compute_letterbox, letterbox_image, LetterboxError, LetterboxInfo, LetterboxResult, Padding,
 };
 /// Error returned by normalization operations.
-pub use normalize::{NormalizeError, NormalizeInfo, NormalizeResult, normalize_image};
+pub use normalize::{normalize_image, NormalizeError, NormalizeInfo, NormalizeResult};
 /// Error returned by direct resize operations.
-pub use resize::{ResizeError, ResizeInfo, ResizeResult, resize_image};
+pub use resize::{resize_image, ResizeError, ResizeInfo, ResizeResult};
