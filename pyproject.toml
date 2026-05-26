@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "rusty-cv"
 version = "0.1.0"
-description = "Small Rust-first computer vision experiments with optional Python bindings."
+description = "Small Rust-first computer vision primitives with optional Python bindings."
 requires-python = ">=3.10"
 
 [tool.maturin]
