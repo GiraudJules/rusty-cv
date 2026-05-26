@@ -1,6 +1,6 @@
 # rusty-cv
 
-[![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org/)
 
 Small Rust-first computer vision primitives with optional Python bindings built from the same core implementation.
 
@@ -15,7 +15,9 @@ Current scope:
 - letterbox resize
 - crop and center crop
 - RGB normalization
+- fused preprocess for tensor-ready HWC/CHW output
 - IoU
+- box conversion, clipping, and geometry remapping helpers
 - hard NMS: single-class, batched, multiclass
 - soft NMS: single-class, batched, multiclass
 - optional Python extension module via `pyo3` + `maturin`
@@ -119,12 +121,17 @@ import rusty_cv
 
 image = np.zeros((480, 640, 3), dtype=np.uint8)
 
-letterboxed, info = rusty_cv.letterbox_image_numpy(
+tensor, info = rusty_cv.preprocess_image_numpy(
     image,
     640,
     640,
+    mode="letterbox",
     fill=(114, 114, 114),
     filter="triangle",
+    mean=(0.485, 0.456, 0.406),
+    std=(0.229, 0.224, 0.225),
+    scale_to_unit=True,
+    layout="chw",
 )
 
 boxes = np.array(
@@ -138,7 +145,9 @@ boxes = np.array(
 scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
 
 keep = rusty_cv.nms(boxes, scores, iou_threshold=0.5)
-print(letterboxed.shape, info)
+mapped = rusty_cv.letterbox_boxes_numpy(boxes, 640, 480, 640, 640)
+print(tensor.shape, info)
+print(mapped)
 print(keep)
 ```
 

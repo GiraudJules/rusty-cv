@@ -90,6 +90,41 @@ def main() -> None:
     assert np.isclose(normalized[0, 0, 0], 1.0)
     assert np.isclose(normalized[0, 0, 1], 0.0)
 
+    preprocessed, preprocess_info = rusty_cv.preprocess_image_numpy(
+        array,
+        4,
+        4,
+        mode="letterbox",
+        fill=(114, 114, 114),
+        filter="nearest",
+        mean=(0.0, 0.0, 0.0),
+        std=(1.0, 1.0, 1.0),
+        scale_to_unit=True,
+        layout="chw",
+    )
+    assert preprocessed.dtype == np.float32
+    assert preprocessed.shape == (3, 4, 4)
+    assert preprocess_info["mode"] == "letterbox"
+    assert preprocess_info["layout"] == "chw"
+    assert preprocess_info["geometry"]["resized_width"] == 4
+    assert preprocess_info["geometry"]["padding"]["top"] == 0
+
+    resized_preprocessed, resized_preprocess_info = rusty_cv.preprocess_image_numpy(
+        array,
+        3,
+        2,
+        mode="resize",
+        filter="nearest",
+        mean=(0.0, 0.0, 0.0),
+        std=(255.0, 255.0, 255.0),
+        scale_to_unit=False,
+        layout="hwc",
+    )
+    assert resized_preprocessed.shape == (2, 3, 3)
+    assert resized_preprocess_info["mode"] == "resize"
+    assert resized_preprocess_info["layout"] == "hwc"
+    assert np.isclose(resized_preprocessed[0, 0, 0], 1.0)
+
     boxes = np.array(
         [
             [0.0, 0.0, 10.0, 10.0],
@@ -98,6 +133,42 @@ def main() -> None:
         ],
         dtype=np.float32,
     )
+    xywh_boxes = rusty_cv.xyxy_to_xywh_numpy(boxes)
+    assert np.allclose(xywh_boxes[0], np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float32))
+    assert np.allclose(rusty_cv.xywh_to_xyxy_numpy(xywh_boxes), boxes)
+
+    clipped_boxes = rusty_cv.clip_boxes_numpy(
+        np.array([[-5.0, 3.0, 12.0, 30.0]], dtype=np.float32),
+        10,
+        20,
+    )
+    assert np.allclose(clipped_boxes[0], np.array([0.0, 3.0, 10.0, 20.0], dtype=np.float32))
+
+    resized_boxes = rusty_cv.resize_boxes_numpy(
+        np.array([[10.0, 20.0, 40.0, 60.0]], dtype=np.float32),
+        100,
+        200,
+        200,
+        100,
+    )
+    assert np.allclose(resized_boxes[0], np.array([20.0, 10.0, 80.0, 30.0], dtype=np.float32))
+
+    letterboxed_boxes = rusty_cv.letterbox_boxes_numpy(
+        np.array([[100.0, 50.0, 300.0, 150.0]], dtype=np.float32),
+        400,
+        200,
+        640,
+        640,
+    )
+    assert np.allclose(
+        letterboxed_boxes[0],
+        np.array([160.0, 240.0, 480.0, 400.0], dtype=np.float32),
+    )
+    assert np.allclose(
+        rusty_cv.unletterbox_boxes_numpy(letterboxed_boxes, 400, 200, 640, 640),
+        np.array([[100.0, 50.0, 300.0, 150.0]], dtype=np.float32),
+    )
+
     scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
     class_ids = np.array([0, 0, 1], dtype=np.int64)
     class_scores = np.array(

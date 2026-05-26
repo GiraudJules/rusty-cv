@@ -2,18 +2,21 @@ use std::io::Cursor;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, RgbImage};
-use numpy::ndarray::{Array1, Array3};
-use numpy::{PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
+use numpy::ndarray::{Array1, Array2, Array3};
+use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
 
 use crate::bbox::{
-    self, BBoxError, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
+    self, BBoxError, BBoxXYWH, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
 };
 use crate::crop::{self, CropError};
 use crate::letterbox::{self, LetterboxError};
 use crate::normalize::{self, NormalizeError};
+use crate::preprocess::{
+    self, PreprocessError, PreprocessGeometry, PreprocessLayout, PreprocessMode,
+};
 use crate::resize::{self, ResizeError};
 
 fn parse_filter(filter: Option<&str>) -> PyResult<FilterType> {
@@ -68,6 +71,10 @@ fn map_normalize_error(err: NormalizeError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
 
+fn map_preprocess_error(err: PreprocessError) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
 fn map_resize_error(err: ResizeError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
@@ -108,6 +115,42 @@ fn letterbox_info_to_pydict<'py>(
     Ok(result)
 }
 
+fn preprocess_info_to_pydict<'py>(
+    py: Python<'py>,
+    info: preprocess::PreprocessInfo,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("width", info.width)?;
+    result.set_item("height", info.height)?;
+    result.set_item("channels", info.channels)?;
+    result.set_item("scale_to_unit", info.scale_to_unit)?;
+    result.set_item(
+        "layout",
+        match info.layout {
+            PreprocessLayout::Hwc => "hwc",
+            PreprocessLayout::Chw => "chw",
+        },
+    )?;
+
+    match info.geometry {
+        PreprocessGeometry::Resize(resize_info) => {
+            let geometry = PyDict::new(py);
+            geometry.set_item("original_width", resize_info.original_width)?;
+            geometry.set_item("original_height", resize_info.original_height)?;
+            geometry.set_item("target_width", resize_info.target_width)?;
+            geometry.set_item("target_height", resize_info.target_height)?;
+            result.set_item("mode", "resize")?;
+            result.set_item("geometry", geometry)?;
+        }
+        PreprocessGeometry::Letterbox(letterbox_info) => {
+            result.set_item("mode", "letterbox")?;
+            result.set_item("geometry", letterbox_info_to_pydict(py, letterbox_info)?)?;
+        }
+    }
+
+    Ok(result)
+}
+
 fn rgb_image_from_numpy(input: PyReadonlyArray3<'_, u8>) -> PyResult<RgbImage> {
     let array = input.as_array();
     let (height, width, channels) = array.dim();
@@ -137,8 +180,13 @@ fn float_array_to_numpy<'py>(
     data: Vec<f32>,
     height: u32,
     width: u32,
+    layout: PreprocessLayout,
 ) -> PyResult<Bound<'py, PyArray3<f32>>> {
-    let array = Array3::from_shape_vec((height as usize, width as usize, 3), data)
+    let shape = match layout {
+        PreprocessLayout::Hwc => (height as usize, width as usize, 3),
+        PreprocessLayout::Chw => (3, height as usize, width as usize),
+    };
+    let array = Array3::from_shape_vec(shape, data)
         .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
     Ok(PyArray3::from_owned_array(py, array))
 }
@@ -170,6 +218,54 @@ fn boxes_from_numpy(input: PyReadonlyArray2<'_, f32>) -> PyResult<Vec<BBoxXYXY>>
         });
     }
     Ok(boxes)
+}
+
+fn boxes_xywh_from_numpy(input: PyReadonlyArray2<'_, f32>) -> PyResult<Vec<BBoxXYWH>> {
+    let array = input.as_array();
+    let (rows, cols) = array.dim();
+
+    if cols != 4 {
+        return Err(PyValueError::new_err(format!(
+            "expected a Nx4 float32 array for boxes, got shape (_, {cols})"
+        )));
+    }
+
+    let mut boxes = Vec::with_capacity(rows);
+    for row in 0..rows {
+        boxes.push(BBoxXYWH {
+            x: array[(row, 0)],
+            y: array[(row, 1)],
+            width: array[(row, 2)],
+            height: array[(row, 3)],
+        });
+    }
+    Ok(boxes)
+}
+
+fn boxes_xyxy_to_numpy<'py>(
+    py: Python<'py>,
+    boxes: Vec<BBoxXYXY>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let mut data = Vec::with_capacity(boxes.len() * 4);
+    for bbox in boxes {
+        data.extend_from_slice(&[bbox.x1, bbox.y1, bbox.x2, bbox.y2]);
+    }
+    let array = Array2::from_shape_vec((data.len() / 4, 4), data)
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    Ok(PyArray2::from_owned_array(py, array))
+}
+
+fn boxes_xywh_to_numpy<'py>(
+    py: Python<'py>,
+    boxes: Vec<BBoxXYWH>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let mut data = Vec::with_capacity(boxes.len() * 4);
+    for bbox in boxes {
+        data.extend_from_slice(&[bbox.x, bbox.y, bbox.width, bbox.height]);
+    }
+    let array = Array2::from_shape_vec((data.len() / 4, 4), data)
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    Ok(PyArray2::from_owned_array(py, array))
 }
 
 fn scores_from_numpy(input: PyReadonlyArray1<'_, f32>) -> Vec<f32> {
@@ -210,6 +306,28 @@ fn parse_soft_nms_method(method: Option<&str>) -> PyResult<SoftNmsMethod> {
         "gaussian" => Ok(SoftNmsMethod::Gaussian),
         other => Err(PyValueError::new_err(format!(
             "unsupported soft_nms method '{other}'. Use linear or gaussian"
+        ))),
+    }
+}
+
+fn parse_preprocess_layout(layout: Option<&str>) -> PyResult<PreprocessLayout> {
+    match layout.unwrap_or("chw").to_ascii_lowercase().as_str() {
+        "chw" => Ok(PreprocessLayout::Chw),
+        "hwc" => Ok(PreprocessLayout::Hwc),
+        other => Err(PyValueError::new_err(format!(
+            "unsupported layout '{other}'. Use chw or hwc"
+        ))),
+    }
+}
+
+fn parse_preprocess_mode(mode: Option<&str>, fill: (u8, u8, u8)) -> PyResult<PreprocessMode> {
+    match mode.unwrap_or("letterbox").to_ascii_lowercase().as_str() {
+        "resize" => Ok(PreprocessMode::Resize),
+        "letterbox" => Ok(PreprocessMode::Letterbox {
+            fill: [fill.0, fill.1, fill.2],
+        }),
+        other => Err(PyValueError::new_err(format!(
+            "unsupported mode '{other}'. Use resize or letterbox"
         ))),
     }
 }
@@ -332,6 +450,101 @@ fn iou_py(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
             y2: b.3,
         },
     )
+}
+
+#[pyfunction]
+fn xyxy_to_xywh_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let converted = bbox::xyxy_to_xywh(&boxes).map_err(map_bbox_error)?;
+    boxes_xywh_to_numpy(py, converted)
+}
+
+#[pyfunction]
+fn xywh_to_xyxy_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_xywh_from_numpy(boxes)?;
+    let converted = bbox::xywh_to_xyxy(&boxes).map_err(map_bbox_error)?;
+    boxes_xyxy_to_numpy(py, converted)
+}
+
+#[pyfunction]
+fn clip_boxes_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    width: u32,
+    height: u32,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let clipped = bbox::clip_boxes(&boxes, width, height).map_err(map_bbox_error)?;
+    boxes_xyxy_to_numpy(py, clipped)
+}
+
+#[pyfunction]
+fn resize_boxes_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let resized = bbox::resize_boxes(
+        &boxes,
+        original_width,
+        original_height,
+        target_width,
+        target_height,
+    )
+    .map_err(map_bbox_error)?;
+    boxes_xyxy_to_numpy(py, resized)
+}
+
+#[pyfunction]
+fn letterbox_boxes_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let remapped = bbox::letterbox_boxes(
+        &boxes,
+        original_width,
+        original_height,
+        target_width,
+        target_height,
+    )
+    .map_err(map_bbox_error)?;
+    boxes_xyxy_to_numpy(py, remapped)
+}
+
+#[pyfunction]
+fn unletterbox_boxes_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    original_width: u32,
+    original_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let remapped = bbox::unletterbox_boxes(
+        &boxes,
+        original_width,
+        original_height,
+        target_width,
+        target_height,
+    )
+    .map_err(map_bbox_error)?;
+    boxes_xyxy_to_numpy(py, remapped)
 }
 
 #[pyfunction(name = "nms")]
@@ -718,13 +931,82 @@ fn normalize_image_numpy<'py>(
         scale_to_unit,
     )
     .map_err(map_normalize_error)?;
-    float_array_to_numpy(py, result.data, result.info.height, result.info.width)
+    float_array_to_numpy(
+        py,
+        result.data,
+        result.info.height,
+        result.info.width,
+        PreprocessLayout::Hwc,
+    )
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    input_array,
+    target_width,
+    target_height,
+    mode=None,
+    fill=(114, 114, 114),
+    filter=None,
+    mean=(0.0, 0.0, 0.0),
+    std=(1.0, 1.0, 1.0),
+    scale_to_unit=true,
+    layout=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn preprocess_image_numpy<'py>(
+    py: Python<'py>,
+    input_array: PyReadonlyArray3<'py, u8>,
+    target_width: u32,
+    target_height: u32,
+    mode: Option<&str>,
+    fill: (u8, u8, u8),
+    filter: Option<&str>,
+    mean: (f32, f32, f32),
+    std: (f32, f32, f32),
+    scale_to_unit: bool,
+    layout: Option<&str>,
+) -> PyResult<(Bound<'py, PyArray3<f32>>, Bound<'py, PyDict>)> {
+    let image = rgb_image_from_numpy(input_array)?;
+    let filter = parse_filter(filter)?;
+    let mode = parse_preprocess_mode(mode, fill)?;
+    let layout = parse_preprocess_layout(layout)?;
+    let result = py
+        .detach(move || {
+            preprocess::preprocess_image(
+                &DynamicImage::ImageRgb8(image),
+                target_width,
+                target_height,
+                mode,
+                filter,
+                [mean.0, mean.1, mean.2],
+                [std.0, std.1, std.2],
+                scale_to_unit,
+                layout,
+            )
+        })
+        .map_err(map_preprocess_error)?;
+    let info = preprocess_info_to_pydict(py, result.info)?;
+    let array = float_array_to_numpy(
+        py,
+        result.data,
+        result.info.height,
+        result.info.width,
+        layout,
+    )?;
+    Ok((array, info))
 }
 
 #[pymodule]
 fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_letterbox_py, m)?)?;
     m.add_function(wrap_pyfunction!(iou_py, m)?)?;
+    m.add_function(wrap_pyfunction!(xyxy_to_xywh_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(xywh_to_xyxy_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(clip_boxes_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(resize_boxes_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(letterbox_boxes_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(unletterbox_boxes_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(nms_py, m)?)?;
     m.add_function(wrap_pyfunction!(batched_nms_py, m)?)?;
     m.add_function(wrap_pyfunction!(multiclass_nms_py, m)?)?;
@@ -740,5 +1022,6 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(letterbox_image, m)?)?;
     m.add_function(wrap_pyfunction!(letterbox_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_image_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(preprocess_image_numpy, m)?)?;
     Ok(())
 }
