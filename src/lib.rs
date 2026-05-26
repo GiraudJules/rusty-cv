@@ -18,6 +18,8 @@ pub mod crop;
 pub mod layout;
 /// Letterbox geometry and image operations.
 pub mod letterbox;
+/// Segmentation mask geometry helpers.
+pub mod mask;
 /// Image normalization operations.
 pub mod normalize;
 /// Fused inference preprocessing operations.
@@ -44,6 +46,11 @@ pub use layout::{chw_to_hwc, hwc_to_chw, nchw_to_nhwc, nhwc_to_nchw, rgb_to_bgr,
 /// Error returned by letterbox operations.
 pub use letterbox::{
     compute_letterbox, letterbox_image, LetterboxError, LetterboxInfo, LetterboxResult, Padding,
+};
+/// Error returned by segmentation mask operations.
+pub use mask::{
+    letterbox_mask, mask_to_box, resize_mask, threshold_mask, unletterbox_mask,
+    LetterboxMaskResult, MaskError, ResizeMaskResult,
 };
 /// Error returned by normalization operations.
 pub use normalize::{normalize_image, NormalizeError, NormalizeInfo, NormalizeResult};

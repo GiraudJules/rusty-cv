@@ -20,6 +20,46 @@ def main() -> None:
     assert info["padding"]["top"] == 140
     assert info["padding"]["bottom"] == 140
 
+    mask = np.array(
+        [
+            [0, 255],
+            [255, 0],
+        ],
+        dtype=np.uint8,
+    )
+    resized_mask = rusty_cv.resize_mask_numpy(mask, 4, 2)
+    assert resized_mask.dtype == np.uint8
+    assert resized_mask.shape == (2, 4)
+
+    letterboxed_mask, letterboxed_mask_info = rusty_cv.letterbox_mask_numpy(mask, 4, 4, fill=7)
+    assert letterboxed_mask.shape == (4, 4)
+    assert letterboxed_mask_info["padding"]["top"] == 0
+    restored_mask = rusty_cv.unletterbox_mask_numpy(letterboxed_mask, 2, 2, 4, 4)
+    assert restored_mask.shape == (2, 2)
+    assert np.array_equal(restored_mask, mask)
+
+    thresholded_mask = rusty_cv.threshold_mask_numpy(
+        np.array([[0.1, 0.8], [0.6, 0.2]], dtype=np.float32),
+        threshold=0.5,
+    )
+    assert np.array_equal(
+        thresholded_mask,
+        np.array([[0, 255], [255, 0]], dtype=np.uint8),
+    )
+
+    box = rusty_cv.mask_to_box_numpy(
+        np.array(
+            [
+                [0, 0, 0, 0],
+                [0, 255, 255, 0],
+                [0, 255, 255, 0],
+                [0, 0, 0, 0],
+            ],
+            dtype=np.uint8,
+        )
+    )
+    assert box == (1.0, 1.0, 3.0, 3.0)
+
     resized = rusty_cv.resize_image(PNG_1X1_RED, 4, 2, filter="nearest", output_format="png")
     letterboxed = rusty_cv.letterbox_image(
         PNG_1X1_RED,
