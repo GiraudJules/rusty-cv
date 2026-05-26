@@ -374,6 +374,7 @@ fn nms_py<'py>(
     pre_nms_top_k=None,
     max_detections=None
 ))]
+#[allow(clippy::too_many_arguments)]
 fn batched_nms_py<'py>(
     py: Python<'py>,
     boxes: PyReadonlyArray2<'_, f32>,
@@ -446,6 +447,7 @@ fn multiclass_nms_py<'py>(
     pre_nms_top_k=None,
     max_detections=None
 ))]
+#[allow(clippy::too_many_arguments)]
 fn soft_nms_py<'py>(
     py: Python<'py>,
     boxes: PyReadonlyArray2<'_, f32>,
@@ -487,6 +489,7 @@ fn soft_nms_py<'py>(
     pre_nms_top_k=None,
     max_detections=None
 ))]
+#[allow(clippy::too_many_arguments)]
 fn batched_soft_nms_py<'py>(
     py: Python<'py>,
     boxes: PyReadonlyArray2<'_, f32>,
@@ -529,6 +532,7 @@ fn batched_soft_nms_py<'py>(
     pre_nms_top_k=None,
     max_detections=None
 ))]
+#[allow(clippy::too_many_arguments)]
 fn multiclass_soft_nms_py<'py>(
     py: Python<'py>,
     boxes: PyReadonlyArray2<'_, f32>,
