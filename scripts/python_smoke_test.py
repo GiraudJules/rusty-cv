@@ -125,6 +125,25 @@ def main() -> None:
     assert resized_preprocess_info["layout"] == "hwc"
     assert np.isclose(resized_preprocessed[0, 0, 0], 1.0)
 
+    hwc_float = np.arange(24, dtype=np.float32).reshape(2, 4, 3)
+    chw_float = rusty_cv.hwc_to_chw_numpy(hwc_float)
+    assert chw_float.dtype == np.float32
+    assert chw_float.shape == (3, 2, 4)
+    assert np.allclose(chw_float, np.transpose(hwc_float, (2, 0, 1)))
+    assert np.allclose(rusty_cv.chw_to_hwc_numpy(chw_float), hwc_float)
+
+    bgr_array = rusty_cv.rgb_to_bgr_numpy(array)
+    assert bgr_array.dtype == np.uint8
+    assert bgr_array.shape == array.shape
+    assert bgr_array[0, 0].tolist() == [0, 0, 255]
+
+    nhwc_batch = np.stack([hwc_float, hwc_float + 100.0], axis=0)
+    nchw_batch = rusty_cv.nhwc_to_nchw_numpy(nhwc_batch)
+    assert nchw_batch.dtype == np.float32
+    assert nchw_batch.shape == (2, 3, 2, 4)
+    assert np.allclose(nchw_batch, np.transpose(nhwc_batch, (0, 3, 1, 2)))
+    assert np.allclose(rusty_cv.nchw_to_nhwc_numpy(nchw_batch), nhwc_batch)
+
     boxes = np.array(
         [
             [0.0, 0.0, 10.0, 10.0],

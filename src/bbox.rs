@@ -226,7 +226,6 @@ pub struct PostprocessResult {
     pub boxes: Vec<BBoxXYXY>,
     pub detections: Vec<Detection>,
 }
-
 /// Errors for box postprocessing operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BBoxError {

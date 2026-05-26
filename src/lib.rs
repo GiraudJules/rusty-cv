@@ -14,6 +14,8 @@
 pub mod bbox;
 /// Crop geometry and image operations.
 pub mod crop;
+/// Tensor layout and channel-order helpers.
+pub mod layout;
 /// Letterbox geometry and image operations.
 pub mod letterbox;
 /// Image normalization operations.
@@ -37,6 +39,8 @@ pub use bbox::{
 };
 /// Error returned by crop operations.
 pub use crop::{center_crop_image, crop_image, CropError, CropInfo, CropResult};
+/// Error returned by tensor layout operations.
+pub use layout::{chw_to_hwc, hwc_to_chw, nchw_to_nhwc, nhwc_to_nchw, rgb_to_bgr, LayoutError};
 /// Error returned by letterbox operations.
 pub use letterbox::{
     compute_letterbox, letterbox_image, LetterboxError, LetterboxInfo, LetterboxResult, Padding,

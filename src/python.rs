@@ -2,8 +2,11 @@ use std::io::Cursor;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, RgbImage};
-use numpy::ndarray::{Array1, Array2, Array3};
-use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3};
+use numpy::ndarray::{Array1, Array2, Array3, Array4};
+use numpy::{
+    PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    PyReadonlyArray4,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
@@ -13,6 +16,7 @@ use crate::bbox::{
     SoftNmsMethod, SoftNmsOptions,
 };
 use crate::crop::{self, CropError};
+use crate::layout::{self, LayoutError};
 use crate::letterbox::{self, LetterboxError};
 use crate::normalize::{self, NormalizeError};
 use crate::preprocess::{
@@ -65,6 +69,10 @@ fn map_bbox_error(err: BBoxError) -> PyErr {
 }
 
 fn map_crop_error(err: CropError) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
+fn map_layout_error(err: LayoutError) -> PyErr {
     PyValueError::new_err(err.to_string())
 }
 
@@ -267,6 +275,26 @@ fn boxes_xywh_to_numpy<'py>(
     let array = Array2::from_shape_vec((data.len() / 4, 4), data)
         .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
     Ok(PyArray2::from_owned_array(py, array))
+}
+
+fn array3_to_pyobject<T: numpy::Element>(
+    py: Python<'_>,
+    data: Vec<T>,
+    shape: (usize, usize, usize),
+) -> PyResult<Py<PyAny>> {
+    let array = Array3::from_shape_vec(shape, data)
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    Ok(PyArray3::from_owned_array(py, array).into_any().unbind())
+}
+
+fn array4_to_pyobject<T: numpy::Element>(
+    py: Python<'_>,
+    data: Vec<T>,
+    shape: (usize, usize, usize, usize),
+) -> PyResult<Py<PyAny>> {
+    let array = Array4::from_shape_vec(shape, data)
+        .map_err(|err| PyValueError::new_err(format!("failed to build NumPy array: {err}")))?;
+    Ok(PyArray4::from_owned_array(py, array).into_any().unbind())
 }
 
 fn scores_from_numpy(input: PyReadonlyArray1<'_, f32>) -> Vec<f32> {
@@ -517,7 +545,6 @@ fn parse_postprocess_remap(
         ))),
     }
 }
-
 #[pyfunction(name = "compute_letterbox")]
 fn compute_letterbox_py<'py>(
     py: Python<'py>,
@@ -570,6 +597,173 @@ fn resize_image_numpy<'py>(
     )
     .map_err(map_resize_error)?;
     rgb_image_to_numpy(py, result.image)
+}
+
+#[pyfunction]
+fn hwc_to_chw_numpy<'py>(py: Python<'py>, input_array: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, u8>>() {
+        let array_view = array.as_array();
+        let (height, width, channels) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::hwc_to_chw(&data, height as u32, width as u32, channels as u32)
+            .map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (channels, height, width));
+    }
+
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, f32>>() {
+        let array_view = array.as_array();
+        let (height, width, channels) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::hwc_to_chw(&data, height as u32, width as u32, channels as u32)
+            .map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (channels, height, width));
+    }
+
+    Err(PyValueError::new_err(
+        "expected a HxWxC NumPy array with dtype uint8 or float32",
+    ))
+}
+
+#[pyfunction]
+fn chw_to_hwc_numpy<'py>(py: Python<'py>, input_array: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, u8>>() {
+        let array_view = array.as_array();
+        let (channels, height, width) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::chw_to_hwc(&data, channels as u32, height as u32, width as u32)
+            .map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (height, width, channels));
+    }
+
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, f32>>() {
+        let array_view = array.as_array();
+        let (channels, height, width) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::chw_to_hwc(&data, channels as u32, height as u32, width as u32)
+            .map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (height, width, channels));
+    }
+
+    Err(PyValueError::new_err(
+        "expected a CxHxW NumPy array with dtype uint8 or float32",
+    ))
+}
+
+#[pyfunction]
+fn rgb_to_bgr_numpy<'py>(py: Python<'py>, input_array: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, u8>>() {
+        let array_view = array.as_array();
+        let (height, width, channels) = array_view.dim();
+        if channels != 3 {
+            return Err(PyValueError::new_err(format!(
+                "expected a HxWx3 NumPy array, got last dimension {}",
+                channels
+            )));
+        }
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted =
+            layout::rgb_to_bgr(&data, height as u32, width as u32).map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (height, width, channels));
+    }
+
+    if let Ok(array) = input_array.extract::<PyReadonlyArray3<'_, f32>>() {
+        let array_view = array.as_array();
+        let (height, width, channels) = array_view.dim();
+        if channels != 3 {
+            return Err(PyValueError::new_err(format!(
+                "expected a HxWx3 NumPy array, got last dimension {}",
+                channels
+            )));
+        }
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted =
+            layout::rgb_to_bgr(&data, height as u32, width as u32).map_err(map_layout_error)?;
+        return array3_to_pyobject(py, converted, (height, width, channels));
+    }
+
+    Err(PyValueError::new_err(
+        "expected a HxWx3 NumPy array with dtype uint8 or float32",
+    ))
+}
+
+#[pyfunction]
+fn nhwc_to_nchw_numpy<'py>(
+    py: Python<'py>,
+    input_array: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(array) = input_array.extract::<PyReadonlyArray4<'_, u8>>() {
+        let array_view = array.as_array();
+        let (batch, height, width, channels) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::nhwc_to_nchw(
+            &data,
+            batch as u32,
+            height as u32,
+            width as u32,
+            channels as u32,
+        )
+        .map_err(map_layout_error)?;
+        return array4_to_pyobject(py, converted, (batch, channels, height, width));
+    }
+
+    if let Ok(array) = input_array.extract::<PyReadonlyArray4<'_, f32>>() {
+        let array_view = array.as_array();
+        let (batch, height, width, channels) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::nhwc_to_nchw(
+            &data,
+            batch as u32,
+            height as u32,
+            width as u32,
+            channels as u32,
+        )
+        .map_err(map_layout_error)?;
+        return array4_to_pyobject(py, converted, (batch, channels, height, width));
+    }
+
+    Err(PyValueError::new_err(
+        "expected a NxHxWxC NumPy array with dtype uint8 or float32",
+    ))
+}
+
+#[pyfunction]
+fn nchw_to_nhwc_numpy<'py>(
+    py: Python<'py>,
+    input_array: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    if let Ok(array) = input_array.extract::<PyReadonlyArray4<'_, u8>>() {
+        let array_view = array.as_array();
+        let (batch, channels, height, width) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::nchw_to_nhwc(
+            &data,
+            batch as u32,
+            channels as u32,
+            height as u32,
+            width as u32,
+        )
+        .map_err(map_layout_error)?;
+        return array4_to_pyobject(py, converted, (batch, height, width, channels));
+    }
+
+    if let Ok(array) = input_array.extract::<PyReadonlyArray4<'_, f32>>() {
+        let array_view = array.as_array();
+        let (batch, channels, height, width) = array_view.dim();
+        let data = array_view.iter().copied().collect::<Vec<_>>();
+        let converted = layout::nchw_to_nhwc(
+            &data,
+            batch as u32,
+            channels as u32,
+            height as u32,
+            width as u32,
+        )
+        .map_err(map_layout_error)?;
+        return array4_to_pyobject(py, converted, (batch, height, width, channels));
+    }
+
+    Err(PyValueError::new_err(
+        "expected a NxCxHxW NumPy array with dtype uint8 or float32",
+    ))
 }
 
 #[pyfunction(name = "iou")]
@@ -1311,6 +1505,11 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(center_crop_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(resize_image, m)?)?;
     m.add_function(wrap_pyfunction!(resize_image_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(hwc_to_chw_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(chw_to_hwc_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(rgb_to_bgr_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(nhwc_to_nchw_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(nchw_to_nhwc_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(letterbox_image, m)?)?;
     m.add_function(wrap_pyfunction!(letterbox_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_image_numpy, m)?)?;
