@@ -380,6 +380,60 @@ fn detections_to_pydict<'py>(
     Ok(result)
 }
 
+fn filtered_indices_to_pydict<'py>(
+    py: Python<'py>,
+    boxes: &[BBoxXYXY],
+    indices: Vec<usize>,
+    scores: Option<&[f32]>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let selected_boxes = indices
+        .iter()
+        .map(|&index| boxes[index])
+        .collect::<Vec<_>>();
+    let selected_indices = indices
+        .iter()
+        .map(|&index| index as i64)
+        .collect::<Vec<_>>();
+
+    let result = PyDict::new(py);
+    result.set_item(
+        "indices",
+        PyArray1::from_owned_array(py, Array1::from_vec(selected_indices)),
+    )?;
+    result.set_item("boxes", boxes_xyxy_to_numpy(py, selected_boxes)?)?;
+
+    if let Some(scores) = scores {
+        let selected_scores = indices
+            .iter()
+            .map(|&index| scores[index])
+            .collect::<Vec<_>>();
+        result.set_item(
+            "scores",
+            PyArray1::from_owned_array(py, Array1::from_vec(selected_scores)),
+        )?;
+    }
+
+    Ok(result)
+}
+
+fn box_filter_result_to_pydict<'py>(
+    py: Python<'py>,
+    result_data: bbox::BoxFilterResult,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    let indices = result_data
+        .indices
+        .iter()
+        .map(|&index| index as i64)
+        .collect::<Vec<_>>();
+    result.set_item(
+        "indices",
+        PyArray1::from_owned_array(py, Array1::from_vec(indices)),
+    )?;
+    result.set_item("boxes", boxes_xyxy_to_numpy(py, result_data.boxes)?)?;
+    Ok(result)
+}
+
 #[pyfunction(name = "compute_letterbox")]
 fn compute_letterbox_py<'py>(
     py: Python<'py>,
@@ -482,6 +536,61 @@ fn clip_boxes_numpy<'py>(
     let boxes = boxes_from_numpy(boxes)?;
     let clipped = bbox::clip_boxes(&boxes, width, height).map_err(map_bbox_error)?;
     boxes_xyxy_to_numpy(py, clipped)
+}
+
+#[pyfunction]
+fn filter_boxes_by_score_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    scores: PyReadonlyArray1<'_, f32>,
+    threshold: f32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let scores = scores_from_numpy(scores);
+    let kept = bbox::filter_boxes_by_score(&boxes, &scores, threshold).map_err(map_bbox_error)?;
+    filtered_indices_to_pydict(py, &boxes, kept, Some(&scores))
+}
+
+#[pyfunction]
+#[pyo3(signature = (boxes, min_area=None, max_area=None))]
+fn filter_boxes_by_area_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    min_area: Option<f32>,
+    max_area: Option<f32>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let kept = bbox::filter_boxes_by_area(&boxes, min_area, max_area).map_err(map_bbox_error)?;
+    filtered_indices_to_pydict(py, &boxes, kept, None)
+}
+
+#[pyfunction]
+fn filter_boxes_by_min_size_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    min_width: f32,
+    min_height: f32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let kept =
+        bbox::filter_boxes_by_min_size(&boxes, min_width, min_height).map_err(map_bbox_error)?;
+    filtered_indices_to_pydict(py, &boxes, kept, None)
+}
+
+#[pyfunction]
+#[pyo3(signature = (boxes, width, height, min_width=0.0, min_height=0.0))]
+fn clip_and_filter_boxes_numpy<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    width: u32,
+    height: u32,
+    min_width: f32,
+    min_height: f32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let result_data = bbox::clip_and_filter_boxes(&boxes, width, height, min_width, min_height)
+        .map_err(map_bbox_error)?;
+    box_filter_result_to_pydict(py, result_data)
 }
 
 #[pyfunction]
@@ -1004,6 +1113,10 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(xyxy_to_xywh_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(xywh_to_xyxy_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(clip_boxes_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_boxes_by_score_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_boxes_by_area_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_boxes_by_min_size_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(clip_and_filter_boxes_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(resize_boxes_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(letterbox_boxes_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(unletterbox_boxes_numpy, m)?)?;

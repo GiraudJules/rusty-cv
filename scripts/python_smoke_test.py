@@ -144,6 +144,46 @@ def main() -> None:
     )
     assert np.allclose(clipped_boxes[0], np.array([0.0, 3.0, 10.0, 20.0], dtype=np.float32))
 
+    score_values = np.array([0.9, 0.8, 0.7], dtype=np.float32)
+    filtered_by_score = rusty_cv.filter_boxes_by_score_numpy(boxes, score_values, 0.75)
+    assert filtered_by_score["indices"].tolist() == [0, 1]
+    assert np.allclose(
+        filtered_by_score["boxes"],
+        np.array(
+            [
+                [0.0, 0.0, 10.0, 10.0],
+                [1.0, 1.0, 11.0, 11.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    filtered_by_area = rusty_cv.filter_boxes_by_area_numpy(boxes, min_area=90.0, max_area=110.0)
+    assert filtered_by_area["indices"].tolist() == [0, 1, 2]
+
+    filtered_by_min_size = rusty_cv.filter_boxes_by_min_size_numpy(boxes, 10.0, 10.0)
+    assert filtered_by_min_size["indices"].tolist() == [0, 1, 2]
+
+    clipped_and_filtered = rusty_cv.clip_and_filter_boxes_numpy(
+        np.array(
+            [
+                [-5.0, 0.0, 6.0, 9.0],
+                [4.0, 4.0, 5.0, 5.0],
+                [9.0, 9.0, 15.0, 15.0],
+            ],
+            dtype=np.float32,
+        ),
+        10,
+        10,
+        min_width=2.0,
+        min_height=2.0,
+    )
+    assert clipped_and_filtered["indices"].tolist() == [0]
+    assert np.allclose(
+        clipped_and_filtered["boxes"],
+        np.array([[-0.0, 0.0, 6.0, 9.0]], dtype=np.float32),
+    )
+
     resized_boxes = rusty_cv.resize_boxes_numpy(
         np.array([[10.0, 20.0, 40.0, 60.0]], dtype=np.float32),
         100,
@@ -169,7 +209,7 @@ def main() -> None:
         np.array([[100.0, 50.0, 300.0, 150.0]], dtype=np.float32),
     )
 
-    scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
+    scores = score_values
     class_ids = np.array([0, 0, 1], dtype=np.int64)
     class_scores = np.array(
         [

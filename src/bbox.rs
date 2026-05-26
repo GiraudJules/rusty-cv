@@ -165,6 +165,13 @@ pub struct Detection {
     pub score: f32,
 }
 
+/// Result returned by box filtering helpers that transform box geometry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxFilterResult {
+    pub boxes: Vec<BBoxXYXY>,
+    pub indices: Vec<usize>,
+}
+
 /// Errors for box postprocessing operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BBoxError {
@@ -188,6 +195,16 @@ pub enum BBoxError {
     InvalidImageSize {
         width: u32,
         height: u32,
+    },
+    InvalidMinArea(f32),
+    InvalidMaxArea(f32),
+    InvalidAreaRange {
+        min_area: f32,
+        max_area: f32,
+    },
+    InvalidMinSize {
+        min_width: f32,
+        min_height: f32,
     },
     NonFiniteBox {
         index: usize,
@@ -239,6 +256,25 @@ impl std::fmt::Display for BBoxError {
                 "image width and height must be greater than zero, got {}x{}",
                 width, height
             ),
+            Self::InvalidMinArea(value) => {
+                write!(f, "min_area must be finite and non-negative, got {}", value)
+            }
+            Self::InvalidMaxArea(value) => {
+                write!(f, "max_area must be finite and non-negative, got {}", value)
+            }
+            Self::InvalidAreaRange { min_area, max_area } => write!(
+                f,
+                "max_area must be greater than or equal to min_area, got min_area={} and max_area={}",
+                min_area, max_area
+            ),
+            Self::InvalidMinSize {
+                min_width,
+                min_height,
+            } => write!(
+                f,
+                "min_width and min_height must be finite and non-negative, got {} and {}",
+                min_width, min_height
+            ),
             Self::NonFiniteBox { index } => {
                 write!(f, "box at index {} contains a non-finite coordinate", index)
             }
@@ -286,6 +322,100 @@ pub fn clip_boxes(boxes: &[BBoxXYXY], width: u32, height: u32) -> Result<Vec<BBo
     let width = width as f32;
     let height = height as f32;
     Ok(boxes.iter().map(|bbox| bbox.clip(width, height)).collect())
+}
+
+/// Keep the indices of boxes whose scores are above `threshold`.
+pub fn filter_boxes_by_score(
+    boxes: &[BBoxXYXY],
+    scores: &[f32],
+    threshold: f32,
+) -> Result<Vec<usize>, BBoxError> {
+    if boxes.len() != scores.len() {
+        return Err(BBoxError::LengthMismatch {
+            boxes: boxes.len(),
+            scores: scores.len(),
+        });
+    }
+
+    if threshold.is_nan() {
+        return Err(BBoxError::InvalidScoreThreshold(threshold));
+    }
+
+    validate_boxes(boxes)?;
+    validate_scores(scores)?;
+    Ok(scores
+        .iter()
+        .enumerate()
+        .filter_map(|(index, score)| (*score >= threshold).then_some(index))
+        .collect())
+}
+
+/// Keep the indices of boxes whose area falls within the requested range.
+pub fn filter_boxes_by_area(
+    boxes: &[BBoxXYXY],
+    min_area: Option<f32>,
+    max_area: Option<f32>,
+) -> Result<Vec<usize>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_area_bounds(min_area, max_area)?;
+
+    Ok(boxes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, bbox)| {
+            let area = bbox.area();
+            let keep_min = min_area.is_none_or(|value| area >= value);
+            let keep_max = max_area.is_none_or(|value| area <= value);
+            (keep_min && keep_max).then_some(index)
+        })
+        .collect())
+}
+
+/// Keep the indices of boxes whose width and height meet the requested minimums.
+pub fn filter_boxes_by_min_size(
+    boxes: &[BBoxXYXY],
+    min_width: f32,
+    min_height: f32,
+) -> Result<Vec<usize>, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_min_size(min_width, min_height)?;
+
+    Ok(boxes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, bbox)| {
+            (bbox.width() >= min_width && bbox.height() >= min_height).then_some(index)
+        })
+        .collect())
+}
+
+/// Clip boxes to image bounds, then keep only boxes whose clipped width and height are large enough.
+pub fn clip_and_filter_boxes(
+    boxes: &[BBoxXYXY],
+    width: u32,
+    height: u32,
+    min_width: f32,
+    min_height: f32,
+) -> Result<BoxFilterResult, BBoxError> {
+    validate_boxes(boxes)?;
+    validate_image_size(width, height)?;
+    validate_min_size(min_width, min_height)?;
+
+    let clipped = clip_boxes(boxes, width, height)?;
+    let mut filtered_boxes = Vec::new();
+    let mut kept_indices = Vec::new();
+
+    for (index, bbox) in clipped.into_iter().enumerate() {
+        if bbox.width() >= min_width && bbox.height() >= min_height {
+            filtered_boxes.push(bbox);
+            kept_indices.push(index);
+        }
+    }
+
+    Ok(BoxFilterResult {
+        boxes: filtered_boxes,
+        indices: kept_indices,
+    })
 }
 
 /// Map boxes from one image size to another with direct resize scaling.
@@ -742,6 +872,42 @@ fn validate_image_size(width: u32, height: u32) -> Result<(), BBoxError> {
     Ok(())
 }
 
+fn validate_area_bounds(min_area: Option<f32>, max_area: Option<f32>) -> Result<(), BBoxError> {
+    if let Some(value) = min_area {
+        if !value.is_finite() || value < 0.0 {
+            return Err(BBoxError::InvalidMinArea(value));
+        }
+    }
+
+    if let Some(value) = max_area {
+        if !value.is_finite() || value < 0.0 {
+            return Err(BBoxError::InvalidMaxArea(value));
+        }
+    }
+
+    if let (Some(min_area), Some(max_area)) = (min_area, max_area) {
+        if max_area < min_area {
+            return Err(BBoxError::InvalidAreaRange { min_area, max_area });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_min_size(min_width: f32, min_height: f32) -> Result<(), BBoxError> {
+    let width_ok = min_width.is_finite() && min_width >= 0.0;
+    let height_ok = min_height.is_finite() && min_height >= 0.0;
+
+    if !width_ok || !height_ok {
+        return Err(BBoxError::InvalidMinSize {
+            min_width,
+            min_height,
+        });
+    }
+
+    Ok(())
+}
+
 fn validate_scores(scores: &[f32]) -> Result<(), BBoxError> {
     for (index, score) in scores.iter().copied().enumerate() {
         if !score.is_finite() {
@@ -953,6 +1119,76 @@ mod tests {
 
         let restored = unletterbox_boxes(&letterboxed, 400, 200, 640, 640).unwrap();
         assert_eq!(restored, boxes);
+    }
+
+    #[test]
+    fn filters_boxes_by_score() {
+        let boxes = vec![
+            BBoxXYXY::from_xywh(0.0, 0.0, 10.0, 10.0),
+            BBoxXYXY::from_xywh(10.0, 10.0, 4.0, 4.0),
+            BBoxXYXY::from_xywh(20.0, 20.0, 2.0, 2.0),
+        ];
+        let scores = vec![0.9, 0.4, 0.7];
+
+        let kept = filter_boxes_by_score(&boxes, &scores, 0.5).unwrap();
+
+        assert_eq!(kept, vec![0, 2]);
+    }
+
+    #[test]
+    fn filters_boxes_by_area() {
+        let boxes = vec![
+            BBoxXYXY::from_xywh(0.0, 0.0, 10.0, 10.0),
+            BBoxXYXY::from_xywh(10.0, 10.0, 4.0, 4.0),
+            BBoxXYXY::from_xywh(20.0, 20.0, 2.0, 2.0),
+        ];
+
+        let kept = filter_boxes_by_area(&boxes, Some(10.0), Some(20.0)).unwrap();
+
+        assert_eq!(kept, vec![1]);
+    }
+
+    #[test]
+    fn filters_boxes_by_min_size() {
+        let boxes = vec![
+            BBoxXYXY::from_xywh(0.0, 0.0, 10.0, 10.0),
+            BBoxXYXY::from_xywh(10.0, 10.0, 4.0, 6.0),
+            BBoxXYXY::from_xywh(20.0, 20.0, 2.0, 8.0),
+        ];
+
+        let kept = filter_boxes_by_min_size(&boxes, 4.0, 7.0).unwrap();
+
+        assert_eq!(kept, vec![0]);
+    }
+
+    #[test]
+    fn clips_and_filters_boxes() {
+        let boxes = vec![
+            BBoxXYXY::from_xywh(-4.0, 1.0, 8.0, 8.0),
+            BBoxXYXY::from_xywh(2.0, 2.0, 1.0, 1.0),
+            BBoxXYXY::from_xywh(8.0, 8.0, 6.0, 6.0),
+        ];
+
+        let result = clip_and_filter_boxes(&boxes, 10, 10, 2.0, 2.0).unwrap();
+
+        assert_eq!(result.indices, vec![0, 2]);
+        assert_eq!(
+            result.boxes,
+            vec![
+                BBoxXYXY {
+                    x1: 0.0,
+                    y1: 1.0,
+                    x2: 4.0,
+                    y2: 9.0,
+                },
+                BBoxXYXY {
+                    x1: 8.0,
+                    y1: 8.0,
+                    x2: 10.0,
+                    y2: 10.0,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1292,6 +1528,28 @@ mod tests {
             BBoxError::InvalidImageSize {
                 width: 0,
                 height: 10,
+            }
+        );
+        assert!(matches!(
+            filter_boxes_by_score(&boxes, &[0.5], f32::NAN).unwrap_err(),
+            BBoxError::InvalidScoreThreshold(value) if value.is_nan()
+        ));
+        assert_eq!(
+            filter_boxes_by_area(&boxes, Some(-1.0), None).unwrap_err(),
+            BBoxError::InvalidMinArea(-1.0)
+        );
+        assert_eq!(
+            filter_boxes_by_area(&boxes, Some(5.0), Some(4.0)).unwrap_err(),
+            BBoxError::InvalidAreaRange {
+                min_area: 5.0,
+                max_area: 4.0,
+            }
+        );
+        assert_eq!(
+            filter_boxes_by_min_size(&boxes, -1.0, 0.0).unwrap_err(),
+            BBoxError::InvalidMinSize {
+                min_width: -1.0,
+                min_height: 0.0,
             }
         );
         assert_eq!(
