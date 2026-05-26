@@ -2,17 +2,23 @@
 
 [![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org/)
 
-`rusty-cv` is a small computer vision library for Rust with optional Python bindings built from the same core implementation.
+Small Rust-first computer vision primitives with optional Python bindings built from the same core implementation.
 
-It currently focuses on the practical preprocessing and postprocessing steps that show up in detection and inference pipelines:
+`rusty-cv` is aimed at two practical use cases:
 
-- resize
+- Rust applications that need lightweight CV preprocessing or detection postprocessing helpers
+- Python CV / deep learning pipelines that want expensive steps moved out of Python
+
+Current scope:
+
+- exact resize
 - letterbox resize
 - crop and center crop
 - RGB normalization
-- bounding box IoU
-- non-maximum suppression
-- optional NumPy-backed Python bindings
+- IoU
+- hard NMS: single-class, batched, multiclass
+- soft NMS: single-class, batched, multiclass
+- optional Python extension module via `pyo3` + `maturin`
 
 ## Why this crate
 
@@ -49,29 +55,27 @@ python3 -m venv .venv
 .venv/bin/maturin develop --features python
 ```
 
+This builds an importable `rusty_cv` module from the same Rust crate.
+
 ## Rust quick start
 
 ```rust
 use image::imageops::FilterType;
-use rusty_cv::{BBoxXYXY, center_crop_image, iou, letterbox_image, nms, normalize_image, resize_image};
+use rusty_cv::{letterbox_image, nms, resize_image, BBoxXYXY};
 
 let image = image::open("input.jpg")?;
-let cropped = center_crop_image(&image, 224, 224)?;
 let resized = resize_image(&image, 320, 240, FilterType::Triangle)?;
 let letterboxed = letterbox_image(&image, 640, 640, [114, 114, 114], FilterType::Triangle)?;
-let normalized = normalize_image(&image, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225], true)?;
 
 let boxes = [
     BBoxXYXY { x1: 0.0, y1: 0.0, x2: 10.0, y2: 10.0 },
     BBoxXYXY { x1: 1.0, y1: 1.0, x2: 11.0, y2: 11.0 },
+    BBoxXYXY { x1: 20.0, y1: 20.0, x2: 30.0, y2: 30.0 },
 ];
-let scores = [0.9, 0.8];
+let scores = [0.9, 0.8, 0.7];
 
-cropped.image.save("cropped.jpg")?;
 resized.image.save("resized.jpg")?;
 letterboxed.image.save("letterboxed.jpg")?;
-println!("{}", normalized.data.len());
-println!("{}", iou(boxes[0], boxes[1]));
 println!("{:?}", nms(&boxes, &scores, 0.5)?);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -123,13 +127,6 @@ letterboxed, info = rusty_cv.letterbox_image_numpy(
     filter="triangle",
 )
 
-normalized = rusty_cv.normalize_image_numpy(
-    image,
-    mean=(0.485, 0.456, 0.406),
-    std=(0.229, 0.224, 0.225),
-    scale_to_unit=True,
-)
-
 boxes = np.array(
     [
         [0.0, 0.0, 10.0, 10.0],
@@ -142,13 +139,21 @@ scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
 
 keep = rusty_cv.nms(boxes, scores, iou_threshold=0.5)
 print(letterboxed.shape, info)
-print(normalized.dtype, normalized.shape)
 print(keep)
 ```
 
-## Package status
+## Detection Postprocessing
 
-`rusty-cv` is usable today for small CV preprocessing and postprocessing tasks, but the API is still early and intentionally compact. The current Python NumPy entrypoints support `H x W x 3` `uint8` inputs, and the crate is still growing toward a broader public release.
+The library now includes:
+
+- `nms(...)`
+- `batched_nms(...)`
+- `multiclass_nms(...)`
+- `soft_nms(...)`
+- `batched_soft_nms(...)`
+- `multiclass_soft_nms(...)`
+
+The detailed documentation for these APIs, including behavior, return shapes, and local Rust/Python timing comparisons, lives in [docs/postprocessing.md](docs/postprocessing.md).
 
 ## Documentation
 
@@ -157,3 +162,12 @@ print(keep)
 - [docs/rust-api.md](docs/rust-api.md)
 - [docs/python-api.md](docs/python-api.md)
 - [docs/comparisons.md](docs/comparisons.md)
+- [docs/postprocessing.md](docs/postprocessing.md)
+
+## Project Status
+
+`rusty-cv` is usable today for small CV preprocessing and detection postprocessing tasks in both Rust and Python, but the crate is still early and the public API is intentionally compact.
+
+## License
+
+No license file has been added yet. Until one is present, this repository should not be treated as open source.
