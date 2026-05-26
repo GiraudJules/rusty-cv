@@ -298,6 +298,38 @@ def main() -> None:
     assert multiclass_soft["indices"].tolist() == [0, 1, 2, 1]
     assert multiclass_soft["class_ids"].tolist() == [0, 1, 1, 0]
     assert np.isclose(float(multiclass_soft["scores"][3]), 0.25546217, atol=1e-6)
+
+    postprocessed = rusty_cv.postprocess_detections(
+        np.array(
+            [
+                [160.0, 240.0, 480.0, 400.0],
+                [170.0, 250.0, 490.0, 410.0],
+                [100.0, 240.0, 140.0, 280.0],
+            ],
+            dtype=np.float32,
+        ),
+        np.array([0.95, 0.90, 0.70], dtype=np.float32),
+        class_ids=np.array([0, 0, 1], dtype=np.int64),
+        geometry_mode="letterbox",
+        processed_width=640,
+        processed_height=640,
+        original_width=400,
+        original_height=200,
+        clip=True,
+    )
+    assert postprocessed["indices"].tolist() == [0, 2]
+    assert postprocessed["class_ids"].tolist() == [0, 1]
+    assert np.allclose(
+        postprocessed["boxes"],
+        np.array(
+            [
+                [100.0, 50.0, 300.0, 150.0],
+                [62.5, 50.0, 87.5, 75.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
     assert np.isclose(rusty_cv.iou((0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 15.0, 15.0)), 25.0 / 175.0)
 
     print("python smoke test: ok")

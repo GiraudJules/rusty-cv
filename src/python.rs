@@ -9,7 +9,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
 
 use crate::bbox::{
-    self, BBoxError, BBoxXYWH, BBoxXYXY, Detection, NmsOptions, SoftNmsMethod, SoftNmsOptions,
+    self, BBoxError, BBoxXYWH, BBoxXYXY, BoxRemap, Detection, NmsOptions, PostprocessOptions,
+    SoftNmsMethod, SoftNmsOptions,
 };
 use crate::crop::{self, CropError};
 use crate::letterbox::{self, LetterboxError};
@@ -432,6 +433,89 @@ fn box_filter_result_to_pydict<'py>(
     )?;
     result.set_item("boxes", boxes_xyxy_to_numpy(py, result_data.boxes)?)?;
     Ok(result)
+}
+
+fn postprocess_result_to_pydict<'py>(
+    py: Python<'py>,
+    result_data: bbox::PostprocessResult,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut indices = Vec::with_capacity(result_data.detections.len());
+    let mut class_ids = Vec::with_capacity(result_data.detections.len());
+    let mut scores = Vec::with_capacity(result_data.detections.len());
+
+    for detection in result_data.detections {
+        indices.push(detection.box_index as i64);
+        class_ids.push(detection.class_id as i64);
+        scores.push(detection.score);
+    }
+
+    let result = PyDict::new(py);
+    result.set_item("boxes", boxes_xyxy_to_numpy(py, result_data.boxes)?)?;
+    result.set_item(
+        "indices",
+        PyArray1::from_owned_array(py, Array1::from_vec(indices)),
+    )?;
+    result.set_item(
+        "class_ids",
+        PyArray1::from_owned_array(py, Array1::from_vec(class_ids)),
+    )?;
+    result.set_item(
+        "scores",
+        PyArray1::from_owned_array(py, Array1::from_vec(scores)),
+    )?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_postprocess_remap(
+    geometry_mode: Option<&str>,
+    processed_width: Option<u32>,
+    processed_height: Option<u32>,
+    original_width: Option<u32>,
+    original_height: Option<u32>,
+) -> PyResult<BoxRemap> {
+    match geometry_mode.map(|value| value.to_ascii_lowercase()) {
+        None => Ok(BoxRemap::None),
+        Some(mode) if mode == "current" => Ok(BoxRemap::Current {
+            width: processed_width.ok_or_else(|| {
+                PyValueError::new_err("processed_width is required for geometry_mode='current'")
+            })?,
+            height: processed_height.ok_or_else(|| {
+                PyValueError::new_err("processed_height is required for geometry_mode='current'")
+            })?,
+        }),
+        Some(mode) if mode == "resize" => Ok(BoxRemap::Resize {
+            processed_width: processed_width.ok_or_else(|| {
+                PyValueError::new_err("processed_width is required for geometry_mode='resize'")
+            })?,
+            processed_height: processed_height.ok_or_else(|| {
+                PyValueError::new_err("processed_height is required for geometry_mode='resize'")
+            })?,
+            original_width: original_width.ok_or_else(|| {
+                PyValueError::new_err("original_width is required for geometry_mode='resize'")
+            })?,
+            original_height: original_height.ok_or_else(|| {
+                PyValueError::new_err("original_height is required for geometry_mode='resize'")
+            })?,
+        }),
+        Some(mode) if mode == "letterbox" => Ok(BoxRemap::Letterbox {
+            processed_width: processed_width.ok_or_else(|| {
+                PyValueError::new_err("processed_width is required for geometry_mode='letterbox'")
+            })?,
+            processed_height: processed_height.ok_or_else(|| {
+                PyValueError::new_err("processed_height is required for geometry_mode='letterbox'")
+            })?,
+            original_width: original_width.ok_or_else(|| {
+                PyValueError::new_err("original_width is required for geometry_mode='letterbox'")
+            })?,
+            original_height: original_height.ok_or_else(|| {
+                PyValueError::new_err("original_height is required for geometry_mode='letterbox'")
+            })?,
+        }),
+        Some(mode) => Err(PyValueError::new_err(format!(
+            "unsupported geometry_mode '{mode}'. Use current, resize, or letterbox"
+        ))),
+    }
 }
 
 #[pyfunction(name = "compute_letterbox")]
@@ -886,6 +970,100 @@ fn multiclass_soft_nms_py<'py>(
     detections_to_pydict(py, detections)
 }
 
+#[pyfunction(name = "postprocess_detections")]
+#[pyo3(signature = (
+    boxes,
+    scores,
+    class_ids=None,
+    geometry_mode=None,
+    processed_width=None,
+    processed_height=None,
+    original_width=None,
+    original_height=None,
+    clip=false,
+    iou_threshold=0.5,
+    score_threshold=None,
+    pre_nms_top_k=None,
+    max_detections=None,
+    min_width=0.0,
+    min_height=0.0,
+    soft=false,
+    soft_method=None,
+    sigma=0.5
+))]
+#[allow(clippy::too_many_arguments)]
+fn postprocess_detections_py<'py>(
+    py: Python<'py>,
+    boxes: PyReadonlyArray2<'_, f32>,
+    scores: PyReadonlyArray1<'_, f32>,
+    class_ids: Option<PyReadonlyArray1<'_, i64>>,
+    geometry_mode: Option<&str>,
+    processed_width: Option<u32>,
+    processed_height: Option<u32>,
+    original_width: Option<u32>,
+    original_height: Option<u32>,
+    clip: bool,
+    iou_threshold: f32,
+    score_threshold: Option<f32>,
+    pre_nms_top_k: Option<usize>,
+    max_detections: Option<usize>,
+    min_width: f32,
+    min_height: f32,
+    soft: bool,
+    soft_method: Option<&str>,
+    sigma: f32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let boxes = boxes_from_numpy(boxes)?;
+    let scores = scores_from_numpy(scores);
+    let class_ids = if let Some(class_ids) = class_ids {
+        class_ids_from_numpy(class_ids)?
+    } else {
+        vec![0usize; boxes.len()]
+    };
+    let remap = parse_postprocess_remap(
+        geometry_mode,
+        processed_width,
+        processed_height,
+        original_width,
+        original_height,
+    )?;
+    let options = PostprocessOptions {
+        iou_threshold,
+        score_threshold: score_threshold.unwrap_or(f32::NEG_INFINITY),
+        pre_nms_top_k,
+        max_detections,
+        min_width,
+        min_height,
+        clip,
+    };
+    let soft_options = if soft {
+        Some(soft_nms_options(
+            parse_soft_nms_method(soft_method)?,
+            iou_threshold,
+            score_threshold,
+            sigma,
+            pre_nms_top_k,
+            max_detections,
+        ))
+    } else {
+        None
+    };
+
+    let result_data = py
+        .detach(move || {
+            bbox::postprocess_detections(
+                &boxes,
+                &scores,
+                &class_ids,
+                remap,
+                &options,
+                soft_options.as_ref(),
+            )
+        })
+        .map_err(map_bbox_error)?;
+    postprocess_result_to_pydict(py, result_data)
+}
+
 #[pyfunction]
 #[pyo3(signature = (input_bytes, x, y, width, height, output_format=None))]
 fn crop_image<'py>(
@@ -1126,6 +1304,7 @@ fn rusty_cv(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(soft_nms_py, m)?)?;
     m.add_function(wrap_pyfunction!(batched_soft_nms_py, m)?)?;
     m.add_function(wrap_pyfunction!(multiclass_soft_nms_py, m)?)?;
+    m.add_function(wrap_pyfunction!(postprocess_detections_py, m)?)?;
     m.add_function(wrap_pyfunction!(crop_image, m)?)?;
     m.add_function(wrap_pyfunction!(crop_image_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(center_crop_image, m)?)?;
