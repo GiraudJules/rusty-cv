@@ -30,10 +30,11 @@ mod python;
 
 /// Error returned by box postprocessing operations.
 pub use bbox::{
-    batched_nms, batched_soft_nms, clip_boxes, iou, letterbox_boxes, multiclass_nms,
+    batched_nms, batched_soft_nms, clip_and_filter_boxes, clip_boxes, filter_boxes_by_area,
+    filter_boxes_by_min_size, filter_boxes_by_score, iou, letterbox_boxes, multiclass_nms,
     multiclass_soft_nms, nms, nms_with_options, resize_boxes, soft_nms, unletterbox_boxes,
-    xywh_to_xyxy, xyxy_to_xywh, BBoxError, BBoxXYWH, BBoxXYXY, Detection, NmsOptions,
-    SoftNmsMethod, SoftNmsOptions,
+    xywh_to_xyxy, xyxy_to_xywh, BBoxError, BBoxXYWH, BBoxXYXY, BoxFilterResult, Detection,
+    NmsOptions, SoftNmsMethod, SoftNmsOptions,
 };
 /// Error returned by crop operations.
 pub use crop::{center_crop_image, crop_image, CropError, CropInfo, CropResult};
